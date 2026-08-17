@@ -56,10 +56,6 @@ program
   .option('-n, --name <name>', 'display name for the feed (required for NEW sites; optional when adding a subcategory to an already-registered site — the existing site title is kept)')
   .action(async (url: string, opts: { name?: string }) => {
     await withDb(async (db, config) => {
-      try { throw new Error('STACKTRACE_DEBUG'); } catch (e) { console.error('STACK', (e as Error).stack); }
-
-      try { throw new Error('STACKTRACE_DEBUG'); } catch (e) { console.error('STACK', (e as Error).stack); }
-
       try {
         const result = await add(db, config, url, opts.name);
         // progress lines are echoed live to stderr by add(); stdout shows the result block
