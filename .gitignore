@@ -6,4 +6,5 @@ logs/
 .DS_Store
 config.yaml
 config.local.yaml
-sites/
+sites/*
+!sites/googlenews.ts
