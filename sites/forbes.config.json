@@ -1,0 +1,16 @@
+{
+  "title": "Forbes Digital Assets",
+  "description": "Latest news, analysis, and insight on cryptocurrency, blockchain, NFTs, and Web3 from Forbes Digital Assets.",
+  "template": "generic",
+  "extract": {
+    "mode": "embedded-json",
+    "ad_markers": [
+      "sign up now for cryptocodex",
+      "free cryptocodex",
+      "cryptoasset & blockchain advisor",
+      "subscribe to how to earn bitcoin",
+      "more for you",
+      "more from forbes"
+    ]
+  }
+}

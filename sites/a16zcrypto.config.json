@@ -1,0 +1,8 @@
+{
+  "title": "Stablecoins — a16z crypto",
+  "description": "Latest articles, research, and podcasts tagged 'stablecoins' from a16z crypto (a16zcrypto.com).",
+  "maxArticles": 100,
+  "preloadScriptId": "a16z-preloaded-posts",
+  "articlePathRe": "^/posts/(article|podcast|videos)/",
+  "loadMorePages": 10
+}

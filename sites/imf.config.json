@@ -1,0 +1,10 @@
+{
+  "title": "IMF — News",
+  "description": "",
+  "template": "generic",
+  "extract": {
+    "mode": "anchors",
+    "max": 100,
+    "hint": "auto-detected: anchors (15 candidates from the index page)"
+  }
+}

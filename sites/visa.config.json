@@ -1,0 +1,9 @@
+{
+  "title": "Redirecting to Studio",
+  "description": "",
+  "template": "generic",
+  "extract": {
+    "mode": "anchors",
+    "hint": "auto-detected: anchors (45 candidates from the index page)"
+  }
+}

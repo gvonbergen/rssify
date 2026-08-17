@@ -1,0 +1,44 @@
+# Redacted example — copy to config.yaml and fill in secrets via:
+#   rssify config set ai.api_key <key>          (writes AI_API_KEY to .env)
+#   rssify config set backends.firecrawl.api_key <key>   (FIRECRAWL_API_KEY in .env)
+server:
+  host: 127.0.0.1
+  port: 3000
+backends:
+  camofox:
+    base_url: http://127.0.0.1:9377
+    access_key: ""
+    user_id: rssify
+    request_timeout_ms: 60000
+  firecrawl:
+    mode: cloud
+    base_url: https://api.firecrawl.dev
+    api_key: ${FIRECRAWL_API_KEY}
+    request_timeout_ms: 60000
+ai:
+  base_url: https://openrouter.ai/api/v1
+  api_key: ${AI_API_KEY}
+  model: meta-llama/llama-3.1-8b-instruct
+  max_input_chars: 40000
+  extract_max_tokens: 32000
+defaults:
+  schedule: 0 */6 * * *
+  engine: camofox
+  schedule_jitter_seconds: 1800
+  feed_item_limit: 10
+  scrape_concurrency: 2
+  scrape_delay:
+    lower_sec: 2
+    upper_sec: 5
+  discover_max: 100
+  follow: true
+  follow_depth: 3
+  follow_until_404: false
+  wait_ms: 0
+  ignore_images: false
+  store_raw: true
+  feed_source: llm
+storage:
+  data_dir: ./data
+  db_path: ./data/state.sqlite
+  keep_content_forever: true
