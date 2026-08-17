@@ -1,9 +1,0 @@
-{
-  "title": "https://www.mastercard.com/us/en/news-and-trends/press.html",
-  "description": "",
-  "template": "generic",
-  "extract": {
-    "mode": "anchors",
-    "hint": "auto-detected: anchors (217 candidates from the index page)"
-  }
-}

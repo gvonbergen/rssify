@@ -1,9 +1,0 @@
-{
-  "title": "reCAPTCHA",
-  "description": "",
-  "template": "generic",
-  "extract": {
-    "mode": "anchors",
-    "hint": "auto-detected: anchors (26 candidates from the index page)"
-  }
-}

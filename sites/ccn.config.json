@@ -1,9 +1,0 @@
-{
-  "title": "News Archive",
-  "description": "",
-  "template": "generic",
-  "extract": {
-    "mode": "anchors",
-    "hint": "auto-detected: anchors (22 candidates from the index page)"
-  }
-}
