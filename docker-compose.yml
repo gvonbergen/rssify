@@ -1,0 +1,41 @@
+# RSSify — self-hosted scraper-to-RSS server.
+#
+# Quick start on a fresh server:
+#   cp config.example.yaml config.yaml
+#   cp .env.example .env                      # fill in your API keys
+#   docker compose up -d --build
+#
+# Secrets stay OUT of the image: config.yaml and .env are bind-mounted
+# read-only at runtime. Edit them on the host, then `docker compose restart`.
+#
+# Two things to change when deploying on ANOTHER machine (not your Mac):
+#   * server.host in config.yaml must be 0.0.0.0 — 127.0.0.1 binds only the
+#     container loopback, so the published port would not answer.
+#   * defaults.engine: camofox points at 192.168.1.110:9377 (your LAN). On a
+#     remote box switch to `defaults.engine: firecrawl` (works via the cloud
+#     API with FIRECRAWL_API_KEY) or point camofox.base_url at a reachable host.
+name: rssify
+
+services:
+  rssify:
+    build: .
+    image: rssify:local
+    container_name: rssify
+    restart: unless-stopped
+    init: true
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./.env:/app/.env:ro
+      - ./data:/app/data          # sqlite DB + scraped raw HTML + LLM sidecars
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 30s

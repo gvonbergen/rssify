@@ -28,6 +28,24 @@ node src/cli.ts list
 CLI entry: `node src/cli.ts <command>` (or `npm run`). A `bin/rssify` launcher
 is wired via `npm link` if you want it on `PATH`.
 
+## Docker
+
+```sh
+cp config.example.yaml config.yaml   # Docker: keep server.host 0.0.0.0
+cp .env.example .env                  # fill in AI_API_KEY / FIRECRAWL_API_KEY
+docker compose up -d --build          # serves on http://<host>:3000
+```
+
+Secrets are **not** baked into the image — `config.yaml` and `.env` are
+bind-mounted read-only, edit them on the host and `docker compose restart`.
+`./data` (sqlite DB, raw HTML, LLM sidecars) and `./logs` persist on the host
+as volumes. Feed URLs are unchanged: `/health`, `/<site>`, `/<site>/<section>`.
+
+When moving the container to another machine, also check the two `docker-compose.yml`
+comments: `server.host` must be `0.0.0.0`, and the `defaults.engine` camofox
+`base_url` (`192.168.1.110:9377` example) must be reachable from that box —
+use `firecrawl` there unless a tunnel/VPN to the camofox host exists.
+
 ## Quick start (works offline against a local/simple site)
 
 Scraping backends are pluggable (see `config.yaml` → `backends`). The default

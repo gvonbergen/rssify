@@ -2,7 +2,8 @@
 #   rssify config set ai.api_key <key>          (writes AI_API_KEY to .env)
 #   rssify config set backends.firecrawl.api_key <key>   (FIRECRAWL_API_KEY in .env)
 server:
-  host: 127.0.0.1
+  # Docker: must be 0.0.0.0 (127.0.0.1 binds only inside the container).
+  host: 0.0.0.0
   port: 3000
 backends:
   camofox:
