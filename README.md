@@ -31,6 +31,7 @@ is wired via `npm link` if you want it on `PATH`.
 ## Docker
 
 ```sh
+cp docker-compose.example.yml docker-compose.yml   # your local file stays out of git
 cp config.example.yaml config.yaml   # Docker: keep server.host 0.0.0.0
 cp .env.example .env                  # fill in AI_API_KEY / FIRECRAWL_API_KEY
 docker compose up -d --build          # serves on http://<host>:3000

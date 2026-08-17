@@ -8,3 +8,5 @@ config.yaml
 config.local.yaml
 sites/*
 !sites/googlenews.ts
+
+docker-compose.yml
