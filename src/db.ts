@@ -209,6 +209,10 @@ export function updateSiteConfig(db: Db, site: string, configJson: string): void
 export function updateSiteTitle(db: Db, site: string, title: string): void {
   db.prepare('UPDATE sites SET title=? WHERE site=?').run(title, site);
 }
+/** Persist a site's cron schedule (read by the Scheduler on `rssify serve`). */
+export function updateSiteSchedule(db: Db, site: string, schedule: string): void {
+  db.prepare('UPDATE sites SET schedule=? WHERE site=?').run(schedule, site);
+}
 export function countItems(db: Db, site: string): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM items WHERE site=?').get(site) as { c: number }).c;
 }

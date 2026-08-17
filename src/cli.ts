@@ -20,6 +20,7 @@ import {
   openDb,
   runsForSite,
   updateSiteConfig,
+  updateSiteSchedule,
   updateSiteTitle,
   type Db,
 } from './db.ts';
@@ -32,6 +33,7 @@ import { Scheduler } from './scheduler.ts';
 import { logger, siteLogger, type Logger, ROOT } from './logger.ts';
 import { cleanHtml, extractMetadata } from './clean.ts';
 import { sha1, slugify, isValidIdentifier, nowMs } from './util.ts';
+import { validateCron, nextCronRun } from './cron.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { ItemRow } from './db.ts';
@@ -118,6 +120,37 @@ program
         ];
       });
       printTable(header, rows);
+    });
+  });
+
+program
+  .command('schedule')
+  .description("View or set a site's cron schedule (e.g. '0 * * * *' = hourly). The scheduler reads it on `rssify serve`.")
+  .argument('<site>', 'site identifier')
+  .argument('[cron]', "cron expression (e.g. '0 * * * *'); omit to show the current schedule")
+  .action(async (site: string, cron?: string) => {
+    await withDb((db, config) => {
+      const s = getSite(db, site);
+      if (!s) {
+        console.error(`no such site: ${site}`);
+        process.exitCode = 1;
+        return;
+      }
+      const effective = s.schedule || config.defaults.schedule;
+      if (cron === undefined) {
+        const next = nextCronRun(effective, Date.now());
+        console.log(`${site}: schedule = ${effective}  (next run ${new Date(next).toISOString()})`);
+        return;
+      }
+      if (!validateCron(cron)) {
+        console.error(`invalid cron expression: ${cron}`);
+        process.exitCode = 1;
+        return;
+      }
+      updateSiteSchedule(db, site, cron);
+      const next = nextCronRun(cron, Date.now());
+      console.log(`set ${site}: schedule = ${cron}  (next run ${new Date(next).toISOString()})`);
+      console.log('restart `rssify serve` for the scheduler to pick it up');
     });
   });
 
