@@ -23,7 +23,7 @@ export interface BackendPlainConfig {
   user_agent: string;
 }
 export interface AppConfig {
-  server: { host: string; port: number; domain?: string };
+  server: { host: string; port: number; domain?: string; public_url?: string };
   backends: {
     camofox: BackendCamofoxConfig;
     firecrawl: BackendFirecrawlConfig;

@@ -40,3 +40,15 @@ services:
       start_period: 20s
       retries: 3
     stop_grace_period: 30s
+    # Optional — external URL via Traefik on the same host (label discovery):
+    # 1. docker network create traefik   (on the Traefik host)
+    # 2. attach this service: `docker network connect traefik rssify`
+    # 3. set `server.public_url` in config.yaml, then add labels:
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.docker.network=traefik"
+    #   - "traefik.http.routers.rssify.rule=Host(`rssify.example.com`)"
+    #   - "traefik.http.routers.rssify.entrypoints=websecure"
+    #   - "traefik.http.routers.rssify.tls.certresolver=letsencrypt"   # if configured
+    #   - "traefik.http.services.rssify.loadbalancer.server.port=3000"
+    # 4. docker compose up -d   (external HTTP is dropped once proxied)

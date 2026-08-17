@@ -10,3 +10,5 @@ sites/*
 !sites/googlenews.ts
 
 docker-compose.yml
+
+tmp_*

@@ -37,6 +37,24 @@ cp .env.example .env                  # fill in AI_API_KEY / FIRECRAWL_API_KEY
 docker compose up -d --build          # serves on http://<host>:3000
 ```
 
+### External access
+
+By default feeds are served on whatever host you reach the server on
+(`http://<host>:3000`). To give feeds a stable public URL (useful behind a
+reverse proxy with TLS), set `server.public_url` in `config.yaml` — feed
+self-links (`atom:link self`) then point at that base even when the request
+arrives via an internal IP/hostname:
+
+```yaml
+server:
+  host: 0.0.0.0
+  port: 3000
+  public_url: https://rssify.example.com
+```
+
+With Traefik on the same host, label-based discovery works without a custom
+compose file — see the commented `traefik` block in `docker-compose.example.yml`.
+
 Secrets are **not** baked into the image — `config.yaml` and `.env` are
 bind-mounted read-only, edit them on the host and `docker compose restart`.
 `./data` (sqlite DB, raw HTML, LLM sidecars) and `./logs` persist on the host

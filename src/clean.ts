@@ -266,9 +266,15 @@ export function absolutize(html: string, baseUrl: string): string {
 /** Extract plain text from HTML (for <description> / LLM input). */
 export function textFromHtml(html: string): string {
   const $ = load(html);
+  // Some sites (ASP.NET-era pages, e.g. Finextra) wrap the ENTIRE document
+  // in a single <form>; stripping forms/buttons/nav then destroys the whole
+  // body. Measure first, and only keep the stripped result if it didn't nuke
+  // most of the page — otherwise fall back to the raw body text.
+  const before = $('body').text().replace(/\s+/g, ' ').trim();
   $('script,style,noscript,svg,form,button,nav,footer,aside,header').remove();
-  const text = $('body').text().replace(/\s+/g, ' ').trim();
-  return text || $('*').first().text().replace(/\s+/g, ' ').trim();
+  const after = $('body').text().replace(/\s+/g, ' ').trim();
+  if (after.length >= Math.max(1, Math.floor(before.length / 4))) return after;
+  return before || $('*').first().text().replace(/\s+/g, ' ').trim();
 }
 
 /**

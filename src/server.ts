@@ -311,7 +311,11 @@ ${blocks}
   app.all('*', (c) => {
     const url = new URL(c.req.url);
     const path = decodeURIComponent(url.pathname);
-    const feedUrl = url.origin + path + (url.search || '');
+    // External/public base URL override: feed self-links then point at the
+    // public host even when the request arrives via an internal IP/host
+    // (e.g. behind Traefik with TLS termination).
+    const base = (config.server.public_url ?? '').replace(/\/+$/, '');
+    const feedUrl = (base || url.origin) + path + (url.search || '');
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return c.text('method not allowed', 405);
 
     if (path === '/' || path === '') {

@@ -374,6 +374,8 @@ export async function runSiteScrape(
             cand,
             article,
             llmExtractor,
+            backends,
+            secLog,
           );
           secLog.info(
             { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
@@ -381,6 +383,43 @@ export async function runSiteScrape(
           );
           return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
         } catch (e) {
+          // Bot-gate HTTP error (e.g. Cloudflare challenge returns 403): the
+          // plain backend throws before any HTML reaches cleaning. If Firecrawl
+          // is configured, retry the page once through its headless browser and
+          // persist the cleaned HTML as a regular (cleaned) article.
+          const msg = String(e);
+          if (config.backends.firecrawl.api_key && /(->|status|HTTP)\s*403/.test(msg)) {
+            try {
+              const r = await backends.firecrawl.scrape(cand.url, {});
+              if (r?.html) {
+                const fbArticle: Article = {
+                  url: cand.url,
+                  title: cand.hintTitle || 'Untitled',
+                  html: r.html,
+                  cleaned: true,
+                  metadata: r.metadata,
+                };
+                const res = await persistArticle(
+                  db,
+                  config,
+                  site,
+                  sec.section,
+                  cand,
+                  fbArticle,
+                  llmExtractor,
+                  backends,
+                  secLog,
+                );
+                secLog.info(
+                  { idx: i + 1, total, url: cand.url, inserted: res.inserted, ms: Date.now() - t0 },
+                  res.inserted ? 'parse: firecrawl fallback ok — new item' : 'parse: firecrawl fallback ok — duplicate',
+                );
+                return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
+              }
+            } catch (e2) {
+              secLog.warn({ url: cand.url, err: String(e2) }, 'firecrawl fallback failed');
+            }
+          }
           secLog.error(
             { idx: i + 1, total, url: cand.url, err: String(e), ms: Date.now() - t0 },
             'parse failed',
@@ -466,6 +505,26 @@ export async function runSiteScrape(
  * data/<site>/<hash>.html, insert item + section membership.
  * Returns 1 if a new item row was written, else 0.
  */
+const BOT_GATE_MARKERS = [
+  'cf-chl', // Cloudflare challenge script
+  'challenge-platform', // Cloudflare Turnstile
+  'cf-browser-verification',
+  'cf-challenge',
+  '__cf_chl_',
+  'just a moment', // Cloudflare interstitial <title>
+];
+
+/**
+ * Heuristic: is this HTML a bot-protection interstitial (e.g. a Cloudflare
+ * "Just a moment…" challenge page) instead of real content? Such pages come
+ * back with HTTP 200/403 and no article body, so readability finds nothing.
+ */
+export function looksBotGated(html: string): boolean {
+  if (!html || html.length < 200) return false;
+  const lower = html.toLowerCase();
+  return BOT_GATE_MARKERS.some((m) => lower.includes(m));
+}
+
 async function persistArticle(
   db: Db,
   config: AppConfig,
@@ -474,6 +533,8 @@ async function persistArticle(
   cand: DiscoveredItem,
   article: Article,
   llmExtractor: ReturnType<typeof buildLlmExtractor> | null,
+  backends: Backends,
+  log: Logger,
 ): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean }> {
   if (!article || typeof article.html !== 'string' || !article.html) {
     throw new Error('parse returned empty article (no html)');
@@ -512,10 +573,38 @@ async function persistArticle(
   } else {
     // camofox path: raw page → readability + metadata extraction
     const cleaned = cleanHtml(article.html, article.url, { adMarkers });
-    if (!cleaned) throw new Error('readability could not extract article content');
-    content = cleaned.content;
-    text = cleaned.text;
-    meta = extractMetadata(article.html, article.url);
+    if (!cleaned) {
+      // Bot-protection interstitial (e.g. Cloudflare challenge)? The fetch
+      // returns the challenge page with no article. Retry once through
+      // Firecrawl (headless browser) when it is configured, then store its
+      // cleaned HTML exactly like the native firecrawl path.
+      if (looksBotGated(article.html) && config.backends.firecrawl.api_key) {
+        let r: Awaited<ReturnType<Backends['firecrawl']['scrape']>>;
+        try {
+          r = await backends.firecrawl.scrape(article.url, {});
+        } catch (e) {
+          throw new Error(`readability could not extract article content (firecrawl fallback failed: ${String((e as Error)?.message ?? e)})`);
+        }
+        if (!r?.html) {
+          throw new Error('readability could not extract article content (firecrawl fallback returned no html)');
+        }
+        log.info({ url: article.url }, 'bot-gated page — firecrawl fallback used');
+        content = absolutizeBody(r.html, article.url);
+        if (adMarkers.length) {
+          content = stripAdBlocks(content, adMarkers);
+          text = textFromHtml(content);
+        } else {
+          text = textFromHtml(r.html);
+        }
+        meta = firecrawlMetadata(r.metadata);
+      } else {
+        throw new Error('readability could not extract article content');
+      }
+    } else {
+      content = cleaned.content;
+      text = cleaned.text;
+      meta = extractMetadata(article.html, article.url);
+    }
   }
 
   // --- paywall filter (per-site opt-in) ---
