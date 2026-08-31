@@ -389,7 +389,7 @@ Tables (all created idempotently by `openDb`):
 | `itemSectionHashes` | `(db, site, section) → Set<string>` | |
 | `itemBelongsToSite` | `(db, site, hash) → boolean` | |
 | `insertItem` / `addItemSection` | | Item + membership (INSERT OR IGNORE) |
-| `recentItems` | `(db, site, section \| null, limit) → ItemRow[]` | Sorted: undated sink, then `COALESCE(published_at, first_seen) DESC` |
+| `recentItems` | `(db, site, section \| null, limit, offset=0) → ItemRow[]` | Sorted: undated sink, then `COALESCE(published_at, first_seen) DESC`; supports offset pagination |
 | `insertRun` | `(db, site, startedAt) → id` | |
 | `finishRun` | `(db, id, finishedAt, status, opts)` | opts: discovered/newItems/error/excerpt/quality |
 | `runsForSite` | `(db, site, limit=50) → RunRow[]` | |
