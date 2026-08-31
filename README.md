@@ -104,6 +104,21 @@ rssify serve                # HTTP server + scheduler
 #   GET /health                  liveness
 ```
 
+The HTML index (`GET /`) shows up to 10 articles per feed by default. Configure
+that limit independently from RSS output with `defaults.website_item_limit`:
+
+```yaml
+defaults:
+  website_item_limit: 20
+```
+
+When more articles are stored, each feed gets a **Show more articles** link.
+It expands that feed progressively through a bounded `limit` query parameter
+(e.g. `/?site=example&limit=20`); invalid, zero, negative, and missing values
+fall back safely, and excessively large values are capped. RSS item limits and
+RSS output are controlled separately by `defaults.feed_item_limit`.
+
+
 ## Commands
 
 | Command | Purpose |

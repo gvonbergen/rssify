@@ -87,7 +87,8 @@ Server built by `createApp(db, config, opts)` (`src/server.ts`), bound by `rssif
 
 | Route | Output |
 |---|---|
-| `GET /` | HTML index of all sites + recent items + feed links |
+| `GET /` | HTML index of all sites + recent items + feed links (up to `defaults.website_item_limit` per feed) |
+| `GET /?site=<site>&limit=<n>` | Progressively expanded HTML view for one feed; bounded/capped `limit`, with optional `offset` for further pages |
 | `GET /health` | `{ status: 'ok', time }` |
 | `GET /<site>` or `/<site>.xml` | Merged RSS 2.0 feed for the site |
 | `GET /<site>/<section>` or `/<site>/<section>.xml` | Section-scoped RSS feed |
@@ -423,7 +424,8 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 |---|---|---|
 | `schedule` | `0 */6 * * *` | per-site `sites.schedule` |
 | `engine` | `firecrawl` (code default) | none (global) — **this instance overrides to `camofox`** in `config.yaml` |
-| `feed_item_limit` | 10 | `serve --limit` / `--all` |
+| `website_item_limit` | 10 | HTML index default per-feed article count; `GET /?site=<site>&limit=<n>` expands one feed (hard cap 1000) |
+| `feed_item_limit` | 10 | RSS output; `serve --limit` / `--all` |
 | `scrape_concurrency` | 2 | none |
 | `scrape_delay` | `{ lower_sec: 2, upper_sec: 5 }` | `config_json.scrape_delay` |
 | `discover_max` | 100 | `config_json.extract.max` |
@@ -445,7 +447,7 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 
 | Export | Signature | Notes |
 |---|---|---|
-| `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored article |
+| `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
 
 Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at
@@ -453,6 +455,9 @@ serve time), `feedSourceFor` (per-site `extract.feedSource` → else
 `defaults.feed_source`), `readLlmSidecar` (loads `data/<site>/<hash>.llm.json`),
 `siteFeedHtml`, `siteStatus`, `stripExt`, `serveRss`, `rootPageHtml`,
 `llmPageHtml` (renders the stored LLM extraction as an HTML article page).
+Exported limit helpers: `normalizeWebsiteItemLimit` safely falls back and caps
+HTML index limits at 1000; `DEFAULT_WEBSITE_ITEM_LIMIT` and
+`MAX_WEBSITE_ITEM_LIMIT` expose those bounds.
 
 ---
 

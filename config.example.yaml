@@ -29,6 +29,9 @@ defaults:
   schedule: 0 */6 * * *
   engine: camofox
   schedule_jitter_seconds: 1800
+  # Maximum articles shown per feed on the HTML index by default. RSS output
+  # remains controlled separately by feed_item_limit.
+  website_item_limit: 10
   feed_item_limit: 10
   scrape_concurrency: 2
   scrape_delay:
