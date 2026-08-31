@@ -96,6 +96,8 @@ rssify list                 # registered sites
 rssify scrape <site>        # manual scrape now
 rssify serve                # HTTP server + scheduler
 # Feeds:
+#   GET /                        concise HTML index (up to N articles per feed)
+#   GET /feed/<site>/articles    dedicated HTML page for one feed's article history
 #   GET /<site>                  merged RSS feed
 #   GET /<site>/<section>        per-section feed
 #   GET /<site>/item/<hash>      cleaned article HTML
@@ -104,8 +106,9 @@ rssify serve                # HTTP server + scheduler
 #   GET /health                  liveness
 ```
 
-The HTML index (`GET /`) shows up to 10 articles per feed by default. Configure
-that limit independently from RSS output with `defaults.website_item_limit`:
+The HTML index (`GET /`) is a concise overview: it shows up to
+`defaults.website_item_limit` articles per feed by default, configured
+independently from RSS output:
 
 ```yaml
 defaults:
@@ -113,10 +116,15 @@ defaults:
 ```
 
 When more articles are stored, each feed gets a **Show more articles** link.
-It expands that feed progressively through a bounded `limit` query parameter
-(e.g. `/?site=example&limit=20`); invalid, zero, negative, and missing values
-fall back safely, and excessively large values are capped. RSS item limits and
-RSS output are controlled separately by `defaults.feed_item_limit`.
+That link performs a normal navigation to a dedicated page for that feed at
+`/feed/<site>/articles` (e.g. `/feed/example/articles?limit=20`) — the main
+index itself never expands, appends to, or otherwise mutates in place. The
+dedicated page identifies the feed, links back to the main index (and to the
+RSS feed), and pages through the full article history with a bounded,
+progressive `limit` parameter (plus `offset` once the 1000-item cap is
+reached); invalid, zero, negative, and missing values fall back safely, and
+excessively large values are capped. RSS item limits and RSS output are
+controlled separately by `defaults.feed_item_limit`.
 
 
 ## Commands

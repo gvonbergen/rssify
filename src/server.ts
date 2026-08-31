@@ -244,22 +244,19 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     });
   }
 
-  function rootPageHtml(url: URL): string {
+  function rootPageHtml(): string {
     const sites = listSites(db).sort((a, b) => a.site.localeCompare(b.site));
+    // The main index is a fixed, concise overview: every feed shows exactly the
+    // configured per-feed limit. Deeper history lives on the dedicated
+    // /feed/<site>/articles page, so the index never expands in place.
     const configuredLimit = normalizeWebsiteItemLimit(config.defaults.website_item_limit);
-    const requestedSite = url.searchParams.get('site');
-    const expandedSite = requestedSite && getSite(db, requestedSite) ? requestedSite : null;
-    const requestedLimit = expandedSite
-      ? normalizeWebsiteItemLimit(url.searchParams.get('limit'), configuredLimit)
-      : configuredLimit;
-    const requestedOffset = expandedSite ? normalizeWebsiteOffset(url.searchParams.get('offset')) : 0;
     const totalItems = sites.reduce((n, s) => n + countItems(db, s.site), 0);
 
     const blocks = sites.map((s) => {
       const sections = listSections(db, s.site);
       const totalCount = countItems(db, s.site);
-      const pageLimit = expandedSite === s.site ? requestedLimit : configuredLimit;
-      const pageOffset = expandedSite === s.site ? requestedOffset : 0;
+      const pageLimit = configuredLimit;
+      const pageOffset = 0;
       // Fetch one extra row so the link is based on whether more articles
       // actually exist, without loading all stored records into the response.
       const page = recentItems(db, s.site, null, pageLimit + 1, pageOffset);
@@ -289,10 +286,8 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
       let moreLink = '';
       if (hasMore) {
         const nextLimit = Math.min(MAX_WEBSITE_ITEM_LIMIT, Math.max(pageLimit + 1, pageLimit * 2));
-        const nextOffset = pageLimit >= MAX_WEBSITE_ITEM_LIMIT ? pageOffset + pageLimit : 0;
-        const params = new URLSearchParams({ site: s.site, limit: String(nextLimit) });
-        if (nextOffset > 0) params.set('offset', String(nextOffset));
-        moreLink = `<p class="show-more"><a href="/?${esc(params.toString())}">Show more articles</a></p>`;
+        const href = `/feed/${encodeURIComponent(s.site)}/articles?limit=${nextLimit}`;
+        moreLink = `<p class="show-more"><a href="${esc(href)}">Show more articles</a></p>`;
       }
       return `<section class="site">
         <h2><a href="${esc(s.url || '')}" target="_blank" rel="noopener">${esc(s.title || s.site)}</a>
@@ -300,7 +295,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
         <p class="meta muted">
           feed: <a href="/${esc(s.site)}">/${esc(s.site)}</a> · schedule <code>${esc(s.schedule || '')}</code>
           · last scrape ${esc(fmt(s.last_scrape_at))} (${esc(s.last_scrape_status || 'never')})${s.last_error ? ' · error: ' + esc(s.last_error) : ''}
-          · ${totalCount} items${pageOffset > 0 ? ` (showing ${pageOffset + 1}–${pageOffset + items.length})` : items.length < totalCount ? ` (showing first ${items.length})` : ''}
+          · ${totalCount} items${items.length < totalCount ? ` (showing first ${items.length})` : ''}
         </p>
         ${sectionLinks ? `<ul class="sections">${sectionLinks}</ul>` : ''}
         <ol class="items">${itemRows}</ol>
@@ -328,6 +323,83 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
 <h1>RSSify — ${sites.length} feeds, ${totalItems} articles</h1>
 ${blocks}
 <footer class="muted"><p>health: <a href="/health">/health</a></p></footer>
+</body></html>`;
+  }
+
+  /** Dedicated per-feed article page at /feed/<site>/articles.
+   *  The main index stays a fixed overview; this page carries the bounded,
+   *  progressive article history for a single site (same limit/offset rules
+   *  as the shipped website_item_limit feature). Returns null for unknown
+   *  sites (caller replies 404). */
+  function feedArticlesPageHtml(site: string, url: URL): string | null {
+    const s = getSite(db, site);
+    if (!s) return null;
+    const configuredLimit = normalizeWebsiteItemLimit(config.defaults.website_item_limit);
+    const pageLimit = normalizeWebsiteItemLimit(url.searchParams.get('limit'), configuredLimit);
+    const pageOffset = normalizeWebsiteOffset(url.searchParams.get('offset'));
+    const totalCount = countItems(db, site);
+    // Fetch one extra row so the link is based on whether more articles
+    // actually exist, without loading all stored records into the response.
+    const page = recentItems(db, site, null, pageLimit + 1, pageOffset);
+    const items = page.slice(0, pageLimit);
+    const hasMore = page.length > pageLimit;
+    const siteTitle = s.title || site;
+
+    const itemRows = items
+      .map((it) => {
+        return `<li class="item">
+          <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
+          <a class="title" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title || '(untitled)')}</a>
+          <span class="muted">· <a href="/${esc(site)}/item/${esc(it.hash)}">cleaned</a> · <a href="/${esc(site)}/item/${esc(it.hash)}/llm">LLMextraction</a></span>
+        </li>`;
+      })
+      .join('');
+
+    let rangeNote = '';
+    if (items.length > 0) {
+      rangeNote =
+        pageOffset > 0
+          ? ` (showing ${pageOffset + 1}–${pageOffset + items.length} of ${totalCount})`
+          : items.length < totalCount
+            ? ` (showing first ${items.length} of ${totalCount})`
+            : ` (${totalCount} items)`;
+    } else if (totalCount > 0) {
+      rangeNote = ` (no articles on this page — ${totalCount} stored)`;
+    } else {
+      rangeNote = ' (no articles yet)';
+    }
+
+    let moreLink = '';
+    if (hasMore) {
+      const nextLimit = Math.min(MAX_WEBSITE_ITEM_LIMIT, Math.max(pageLimit + 1, pageLimit * 2));
+      const nextOffset = pageLimit >= MAX_WEBSITE_ITEM_LIMIT ? pageOffset + pageLimit : 0;
+      const params = new URLSearchParams({ limit: String(nextLimit) });
+      if (nextOffset > 0) params.set('offset', String(nextOffset));
+      const href = `/feed/${encodeURIComponent(site)}/articles?${params.toString()}`;
+      moreLink = `<p class="show-more"><a href="${esc(href)}">Show more articles</a></p>`;
+    }
+
+    return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>${esc(siteTitle)} — articles</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { border-bottom: 2px solid #eee; padding-bottom: .5rem; }
+  .muted { color: #777; font-size: .85rem; }
+  ol.items { padding-left: 1.4rem; }
+  li.item { margin: .35rem 0; }
+  .show-more { margin: .8rem 0 0; }
+  .nav { margin-bottom: 1rem; }
+  .nav a { margin-right: 1.25rem; color: #555; }
+  li.item .date { font-variant-numeric: tabular-nums; color: #555; font-size: .85rem; margin-right: .5rem; }
+</style>
+</head><body>
+<p class="nav"><a href="/" title="Back to the main RSSify index">← Back to all feeds</a><a href="/${esc(site)}" title="Subscribe via RSS">RSS feed</a></p>
+<h1>${esc(siteTitle)} <span class="muted">(${esc(site)})</span></h1>
+<p class="meta muted">${esc(siteTitle)} article history${rangeNote}</p>
+<ol class="items">${itemRows}</ol>
+${moreLink}
 </body></html>`;
   }
 
@@ -373,7 +445,7 @@ ${blocks}
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return c.text('method not allowed', 405);
 
     if (path === '/' || path === '') {
-      return c.html(rootPageHtml(url));
+      return c.html(rootPageHtml());
     }
 
     if (path === '/health') return c.json({ status: 'ok', time: Date.now() });
@@ -381,6 +453,14 @@ ${blocks}
     let segments = path.split('/').filter(Boolean);
     // Normalize alias "site.xml" at any final position.
     const plainSite = (seg: string) => stripExt(seg).name;
+
+    // /feed/<site>/articles — dedicated per-feed articles page.
+    // Match before the generic 3-segment handler; guard so the item route
+    // still wins when a site is literally named "feed".
+    if (segments.length === 3 && segments[0] === 'feed' && segments[2] === 'articles' && segments[1] !== 'item') {
+      const page = feedArticlesPageHtml(plainSite(segments[1]), url);
+      return page === null ? c.text('not found', 404) : c.html(page);
+    }
 
     // /<site>[/.xml]  → merged feed
     // /<site>/<section>[/.xml] → section feed
