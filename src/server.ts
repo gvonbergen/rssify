@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { ROOT } from './logger.ts';
 import type { AppConfig } from './config.ts';
 import {
+  countItems,
   getItem,
   getSection,
   getSite,
@@ -15,6 +16,36 @@ import {
 } from './db.ts';
 import { buildRss, ttlFromSchedule, type FeedItem, type FeedMeta } from './rss.ts';
 import { stripImages, sanitizeArticleHtml, textToHtml, textFromHtml } from './clean.ts';
+
+export const DEFAULT_WEBSITE_ITEM_LIMIT = 10;
+/** Hard cap for one HTML index response, including progressive expansions. */
+export const MAX_WEBSITE_ITEM_LIMIT = 1000;
+const MAX_WEBSITE_OFFSET = 1_000_000_000;
+
+function positiveInteger(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+/** Normalize user/config input without allowing an unbounded HTML response. */
+export function normalizeWebsiteItemLimit(value: unknown, fallback = DEFAULT_WEBSITE_ITEM_LIMIT): number {
+  const safeFallback = Math.min(positiveInteger(fallback) ?? DEFAULT_WEBSITE_ITEM_LIMIT, MAX_WEBSITE_ITEM_LIMIT);
+  const parsed = positiveInteger(value);
+  return Math.min(parsed ?? safeFallback, MAX_WEBSITE_ITEM_LIMIT);
+}
+
+function normalizeWebsiteOffset(value: string | null): number {
+  if (value === null || !/^\d+$/.test(value.trim())) return 0;
+  const parsed = Number(value.trim());
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 0;
+  return Math.min(Math.max(parsed, 0), MAX_WEBSITE_OFFSET);
+}
 
 export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number } = {}): Hono {
   const app = new Hono();
@@ -213,14 +244,27 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     });
   }
 
-  function rootPageHtml(): string {
+  function rootPageHtml(url: URL): string {
     const sites = listSites(db).sort((a, b) => a.site.localeCompare(b.site));
-    const totalItems = sites.reduce((n, s) => n + recentItems(db, s.site, null, 100000).length, 0);
+    const configuredLimit = normalizeWebsiteItemLimit(config.defaults.website_item_limit);
+    const requestedSite = url.searchParams.get('site');
+    const expandedSite = requestedSite && getSite(db, requestedSite) ? requestedSite : null;
+    const requestedLimit = expandedSite
+      ? normalizeWebsiteItemLimit(url.searchParams.get('limit'), configuredLimit)
+      : configuredLimit;
+    const requestedOffset = expandedSite ? normalizeWebsiteOffset(url.searchParams.get('offset')) : 0;
+    const totalItems = sites.reduce((n, s) => n + countItems(db, s.site), 0);
 
     const blocks = sites.map((s) => {
       const sections = listSections(db, s.site);
-      const items = recentItems(db, s.site, null, 500);
-      const truncated = recentItems(db, s.site, null, 501).length > 500;
+      const totalCount = countItems(db, s.site);
+      const pageLimit = expandedSite === s.site ? requestedLimit : configuredLimit;
+      const pageOffset = expandedSite === s.site ? requestedOffset : 0;
+      // Fetch one extra row so the link is based on whether more articles
+      // actually exist, without loading all stored records into the response.
+      const page = recentItems(db, s.site, null, pageLimit + 1, pageOffset);
+      const items = page.slice(0, pageLimit);
+      const hasMore = page.length > pageLimit;
       const sectionLinks = sections
         .map((sec) => {
           const count = recentItems(db, s.site, sec.section, 100000).length;
@@ -242,16 +286,25 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
           </li>`;
         })
         .join('');
+      let moreLink = '';
+      if (hasMore) {
+        const nextLimit = Math.min(MAX_WEBSITE_ITEM_LIMIT, Math.max(pageLimit + 1, pageLimit * 2));
+        const nextOffset = pageLimit >= MAX_WEBSITE_ITEM_LIMIT ? pageOffset + pageLimit : 0;
+        const params = new URLSearchParams({ site: s.site, limit: String(nextLimit) });
+        if (nextOffset > 0) params.set('offset', String(nextOffset));
+        moreLink = `<p class="show-more"><a href="/?${esc(params.toString())}">Show more articles</a></p>`;
+      }
       return `<section class="site">
         <h2><a href="${esc(s.url || '')}" target="_blank" rel="noopener">${esc(s.title || s.site)}</a>
           <span class="muted">(${esc(s.site)})</span></h2>
         <p class="meta muted">
           feed: <a href="/${esc(s.site)}">/${esc(s.site)}</a> · schedule <code>${esc(s.schedule || '')}</code>
           · last scrape ${esc(fmt(s.last_scrape_at))} (${esc(s.last_scrape_status || 'never')})${s.last_error ? ' · error: ' + esc(s.last_error) : ''}
-          · ${items.length} items${truncated ? ' (showing first 500)' : ''}
+          · ${totalCount} items${pageOffset > 0 ? ` (showing ${pageOffset + 1}–${pageOffset + items.length})` : items.length < totalCount ? ` (showing first ${items.length})` : ''}
         </p>
         ${sectionLinks ? `<ul class="sections">${sectionLinks}</ul>` : ''}
         <ol class="items">${itemRows}</ol>
+        ${moreLink}
       </section>`;
     }).join('\n');
 
@@ -267,6 +320,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
   code { background: #f4f4f4; padding: 0 .3em; border-radius: 3px; }
   ul.sections, ol.items { padding-left: 1.4rem; }
   li.item { margin: .35rem 0; }
+  .show-more { margin: .8rem 0 0; }
   li.item .date { font-variant-numeric: tabular-nums; color: #555; font-size: .85rem; margin-right: .5rem; }
   .site + .site { border-top: 1px solid #eee; margin-top: 1.6rem; padding-top: .4rem; }
 </style>
@@ -319,7 +373,7 @@ ${blocks}
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return c.text('method not allowed', 405);
 
     if (path === '/' || path === '') {
-      return c.html(rootPageHtml());
+      return c.html(rootPageHtml(url));
     }
 
     if (path === '/health') return c.json({ status: 'ok', time: Date.now() });

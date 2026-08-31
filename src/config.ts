@@ -43,6 +43,8 @@ export interface AppConfig {
   defaults: {
     schedule: string;
     engine: 'camofox' | 'firecrawl' | 'plain';
+    /** Maximum articles shown per feed on the HTML index by default. */
+    website_item_limit: number;
     feed_item_limit: number;
     scrape_concurrency: number;
     /** Random delay band (seconds) between requests to a site; 0 = no delay.
@@ -127,6 +129,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   defaults: {
     schedule: '0 */6 * * *',
     engine: 'firecrawl',
+    website_item_limit: 10,
     feed_item_limit: 10,
     scrape_concurrency: 2,
     scrape_delay: { lower_sec: 2, upper_sec: 5 },

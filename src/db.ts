@@ -278,8 +278,14 @@ export function updateItemPublishedAtByHash(db: Db, site: string, hash: string, 
 export function addItemSection(db: Db, site: string, section: string, hash: string): void {
   db.prepare('INSERT OR IGNORE INTO item_sections (site,section,hash) VALUES (?,?,?)').run(site, section, hash);
 }
-/** Recent items (optionally filtered to a section). */
-export function recentItems(db: Db, site: string, section: string | null, limit: number): ItemRow[] {
+/** Recent items (optionally filtered to a section), with an optional offset. */
+export function recentItems(
+  db: Db,
+  site: string,
+  section: string | null,
+  limit: number,
+  offset = 0,
+): ItemRow[] {
   let sql = `SELECT i.* FROM items i WHERE i.site=?`;
   const args: unknown[] = [site];
   if (section) {
@@ -288,8 +294,8 @@ export function recentItems(db: Db, site: string, section: string | null, limit:
   }
   // published_at may be null → sink undated items to the bottom instead of
   // letting their (fresher) first_seen push them to the top of the feed.
-  sql += ` ORDER BY (i.published_at IS NULL) ASC, COALESCE(i.published_at, i.first_seen) DESC, i.first_seen DESC LIMIT ?`;
-  args.push(limit);
+  sql += ` ORDER BY (i.published_at IS NULL) ASC, COALESCE(i.published_at, i.first_seen) DESC, i.first_seen DESC LIMIT ? OFFSET ?`;
+  args.push(limit, offset);
   return db.prepare(sql).all(...args) as ItemRow[];
 }
 
