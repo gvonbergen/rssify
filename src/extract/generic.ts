@@ -58,6 +58,27 @@ interface GenericProfile {
   maxArticlesPerDiscover?: number;
 }
 
+/**
+ * Prefer the article page's timestamp, unless it is implausibly later than the
+ * date supplied by discovery. Listing/feed dates can be less precise, but an
+ * article cannot normally be published more than a day after it was listed.
+ */
+export function choosePublishedDate(
+  pageDate?: string,
+  discoveryDate?: string,
+): string | undefined {
+  if (!pageDate) return discoveryDate;
+  if (!discoveryDate) return pageDate;
+
+  const pageMs = Date.parse(pageDate);
+  const discoveryMs = Date.parse(discoveryDate);
+  if (!Number.isFinite(pageMs)) return discoveryDate;
+  if (!Number.isFinite(discoveryMs)) return pageDate;
+
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  return pageMs > discoveryMs + oneDayMs ? discoveryDate : pageDate;
+}
+
 export function createGenericScraper(site: string): SiteScraper {
   return {
     site,
@@ -171,7 +192,7 @@ export function createGenericScraper(site: string): SiteScraper {
           // og:article:published_time / <time datetime>) is authoritative;
           // the discovery-page hint (date-only, e.g. "10 Aug 2026") is a
           // fallback for pages that expose no date at all.
-          publishedAt: meta.publishedAt ?? item.hintDate,
+          publishedAt: choosePublishedDate(meta.publishedAt, item.hintDate),
         };
       }
       // camofox: raw page via stealth browser → readability (same semantics as
@@ -192,7 +213,7 @@ export function createGenericScraper(site: string): SiteScraper {
       // Page's own structured date wins over the discovery hint (which is
       // usually date-only; the article page carries the full timestamp).
       const meta = extractMetadata(html, item.url);
-      article.publishedAt = meta.publishedAt ?? item.hintDate ?? undefined;
+      article.publishedAt = choosePublishedDate(meta.publishedAt, item.hintDate);
       return article;
     },
   };

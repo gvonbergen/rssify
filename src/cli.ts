@@ -22,6 +22,8 @@ import {
   updateSiteConfig,
   updateSiteSchedule,
   updateSiteTitle,
+  updateItemPublishedAtByUrl,
+  updateItemPublishedAtByHash,
   type Db,
 } from './db.ts';
 import { add, RESERVED } from './add.ts';
@@ -32,7 +34,8 @@ import { createApp } from './server.ts';
 import { Scheduler } from './scheduler.ts';
 import { logger, siteLogger, type Logger, ROOT } from './logger.ts';
 import { cleanHtml, extractMetadata } from './clean.ts';
-import { sha1, slugify, isValidIdentifier, nowMs } from './util.ts';
+import { sha1, slugify, isValidIdentifier, normalizeUrl, nowMs } from './util.ts';
+import { parseGoogleAlertsFeed } from '../sites/googlenews.ts';
 import { validateCron, nextCronRun } from './cron.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -402,8 +405,8 @@ program
 
 program
   .command('gnews')
-  .description("Register Google News topics — each topic is backed by a Google Alerts Atom feed URL. Actions: add <topic> <feed-url> | list | rm <topic>")
-  .argument('[action]', 'add | list | rm')
+  .description("Register Google News topics — each topic is backed by a Google Alerts Atom feed URL. Actions: add <topic> <feed-url> | list | rm <topic> | repair-dates")
+  .argument('[action]', 'add | list | rm | repair-dates')
   .argument('[topic]', 'topic name, e.g. \"Stablecoin\" (an alert you configured on google.com/alerts)')
   .argument('[feedUrl]', "the topic's Google Alerts Atom feed URL (see below)")
   .action(async (action?: string, topic?: string, feedUrl?: string) => {
@@ -426,6 +429,48 @@ program
       };
       if (action === 'list') {
         printList();
+        return;
+      }
+      if (action === 'repair-dates') {
+        const sections = listSections(db, GNEWS_SITE);
+        if (sections.length === 0) {
+          console.log('no Google News topics registered');
+          return;
+        }
+        const backends = buildBackends(config);
+        let feedEntries = 0;
+        let matched = 0;
+        let changed = 0;
+        for (const sec of sections) {
+          const xml = await backends.plain.fetch(sec.index_url, {
+            headers: { accept: 'application/atom+xml, application/xml;q=0.9, */*;q=0.8' },
+          });
+          for (const item of parseGoogleAlertsFeed(xml)) {
+            feedEntries++;
+            if (!item.hintDate) continue;
+            const publishedAt = Date.parse(item.hintDate);
+            if (!Number.isFinite(publishedAt)) continue;
+            const url = normalizeUrl(item.url);
+            const byUrl = db.prepare('SELECT hash, published_at FROM items WHERE site=? AND url=?').get(GNEWS_SITE, url) as
+              | { hash: string; published_at: number | null }
+              | undefined;
+            // Publishers frequently canonicalize Google Alert URLs during the
+            // initial scrape. Fall back to an unambiguous exact feed title.
+            const byTitle = !byUrl && item.hintTitle
+              ? db.prepare('SELECT hash, published_at FROM items WHERE site=? AND title=? LIMIT 2').all(GNEWS_SITE, item.hintTitle) as
+                  { hash: string; published_at: number | null }[]
+              : [];
+            const existing = byUrl ?? (byTitle.length === 1 ? byTitle[0] : undefined);
+            if (!existing) continue;
+            matched++;
+            if (existing.published_at !== publishedAt) {
+              changed += byUrl
+                ? updateItemPublishedAtByUrl(db, GNEWS_SITE, url, publishedAt)
+                : updateItemPublishedAtByHash(db, GNEWS_SITE, existing.hash, publishedAt);
+            }
+          }
+        }
+        console.log(`Google News date repair: ${feedEntries} feed entries, ${matched} stored matches, ${changed} dates corrected`);
         return;
       }
       if (action === 'rm') {
@@ -503,7 +548,7 @@ program
         console.log('  next: `rssify scrape ' + GNEWS_SITE + '` to fetch its articles');
         return;
       }
-      console.error('usage: rssify gnews <add <topic> <feed-url> | list | rm <topic>>');
+      console.error('usage: rssify gnews <add <topic> <feed-url> | list | rm <topic> | repair-dates>');
       process.exitCode = 1;
     });
   });

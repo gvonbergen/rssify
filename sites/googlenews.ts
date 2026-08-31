@@ -24,7 +24,7 @@ export const site = 'googlenews';
 const generic = createGenericScraper('googlenews');
 
 /** Parse a Google Alerts Atom feed body into discovered article candidates. */
-function parseGoogleAlertsFeed(xml: string): DiscoveredItem[] {
+export function parseGoogleAlertsFeed(xml: string): DiscoveredItem[] {
   const $ = cheerioLoad(xml, { xmlMode: true });
   const out: DiscoveredItem[] = [];
 
@@ -88,7 +88,17 @@ export async function parse(
   backends: Backends,
   item: DiscoveredItem,
 ): Promise<Article> {
-  return generic.parse(ctx, backends, item);
+  const article = await generic.parse(ctx, backends, item);
+
+  // For feed-backed discovery, Google Alerts' <published> value describes when
+  // the result entered the news feed. Destination pages often contain future
+  // event/effective dates that generic metadata extraction can mistake for the
+  // publication date, so the valid Atom timestamp is authoritative here.
+  if (item.hintDate && Number.isFinite(Date.parse(item.hintDate))) {
+    article.publishedAt = item.hintDate;
+  }
+
+  return article;
 }
 
 export default { site, discover, parse };

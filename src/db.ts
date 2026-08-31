@@ -269,6 +269,12 @@ export function insertItem(db: Db, it: ItemRow): void {
      VALUES (@site,@hash,@url,@title,@published_at,@first_seen,@content_path,@content_hash,@raw_path)`,
   ).run(it);
 }
+export function updateItemPublishedAtByUrl(db: Db, site: string, url: string, publishedAt: number): number {
+  return db.prepare('UPDATE items SET published_at=? WHERE site=? AND url=?').run(publishedAt, site, url).changes;
+}
+export function updateItemPublishedAtByHash(db: Db, site: string, hash: string, publishedAt: number): number {
+  return db.prepare('UPDATE items SET published_at=? WHERE site=? AND hash=?').run(publishedAt, site, hash).changes;
+}
 export function addItemSection(db: Db, site: string, section: string, hash: string): void {
   db.prepare('INSERT OR IGNORE INTO item_sections (site,section,hash) VALUES (?,?,?)').run(site, section, hash);
 }
