@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { ROOT } from './logger.ts';
 
@@ -148,11 +148,17 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
 };
 
+/** File locations may be overridden by tests or embedding applications. */
+export interface ConfigPaths {
+  configPath?: string;
+  envPath?: string;
+}
+
 /** Minimal .env parser → map. */
-export function loadEnvFile(): Record<string, string> {
-  if (!existsSync(ENV_PATH)) return {};
+export function loadEnvFile(path = ENV_PATH): Record<string, string> {
+  if (!existsSync(path)) return {};
   const out: Record<string, string> = {};
-  for (const raw of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
@@ -190,12 +196,13 @@ function walk(obj: unknown, env: Record<string, string>): unknown {
   return obj;
 }
 
-/** Deep-merge defaults with the on-disk config.yaml, expanding ${VAR}. */
-export function loadConfig(): AppConfig {
-  const env = { ...loadEnvFile() };
+/** Deep-merge defaults with config.yaml, expanding ${VAR}. */
+export function loadConfig(paths: ConfigPaths = {}): AppConfig {
+  const configPath = paths.configPath ?? CONFIG_PATH;
+  const env = { ...loadEnvFile(paths.envPath ?? ENV_PATH) };
   let disk: unknown = {};
-  if (existsSync(CONFIG_PATH)) {
-    disk = YAML.parse(readFileSync(CONFIG_PATH, 'utf8')) ?? {};
+  if (existsSync(configPath)) {
+    disk = YAML.parse(readFileSync(configPath, 'utf8')) ?? {};
   }
   const merged = deepMerge(structuredClone(DEFAULT_CONFIG) as unknown, disk);
   return walk(merged, env) as AppConfig;
@@ -237,8 +244,8 @@ function deepMerge(base: unknown, override: unknown): unknown {
 }
 
 /** Get a dotted path value from the on-disk (merged, expanded) config. */
-export function configGet(path: string): unknown {
-  const cfg = loadConfig() as unknown as Record<string, unknown>;
+export function configGet(path: string, paths: ConfigPaths = {}): unknown {
+  const cfg = loadConfig(paths) as unknown as Record<string, unknown>;
   const parts = path.split('.');
   let cur: unknown = cfg;
   for (const p of parts) {
@@ -253,8 +260,11 @@ export function configGet(path: string): unknown {
  * Set a dotted-path config key on-disk. Keys ending in `.api_key` (or
  * containing `KEY`) are treated as secrets and written to `.env` instead of
  * config.yaml. Returns the key name written to .env if it was a secret.
+ * `paths` exists so callers can safely target an isolated config directory.
  */
-export function configSet(path: string, value: string): string | null {
+export function configSet(path: string, value: string, paths: ConfigPaths = {}): string | null {
+  const configPath = paths.configPath ?? CONFIG_PATH;
+  const envPath = paths.envPath ?? ENV_PATH;
   // Secrets → .env
   if (/\.(api_key|access_key)$/.test(path) || /KEY/.test(path)) {
     const secretKeys: Record<string, string> = {
@@ -264,15 +274,15 @@ export function configSet(path: string, value: string): string | null {
     };
     const envName = secretKeys[path];
     if (!envName) throw new Error(`No known secret env var for path '${path}'`);
-    const env = loadEnvFile();
+    const env = loadEnvFile(envPath);
     env[envName] = value;
-    writeEnvFile(env);
+    writeEnvFile(env, envPath);
     return envName;
   }
   // Non-secret → config.yaml
-  mkdirSync(ROOT, { recursive: true });
+  mkdirSync(dirname(configPath), { recursive: true });
   let disk: Record<string, unknown> = {};
-  if (existsSync(CONFIG_PATH)) disk = YAML.parse(readFileSync(CONFIG_PATH, 'utf8')) ?? {};
+  if (existsSync(configPath)) disk = YAML.parse(readFileSync(configPath, 'utf8')) ?? {};
   const parts = path.split('.');
   const coerced = coerce(value);
   let cur = disk;
@@ -282,13 +292,14 @@ export function configSet(path: string, value: string): string | null {
     cur = cur[k] as Record<string, unknown>;
   }
   cur[parts[parts.length - 1]] = coerced;
-  writeFileSync(CONFIG_PATH, YAML.stringify(disk), 'utf8');
+  writeFileSync(configPath, YAML.stringify(disk), 'utf8');
   return null;
 }
 
-function writeEnvFile(env: Record<string, string>): void {
+function writeEnvFile(env: Record<string, string>, path = ENV_PATH): void {
+  mkdirSync(dirname(path), { recursive: true });
   const lines = Object.entries(env).map(([k, v]) => `${k}=${v}`);
-  writeFileSync(ENV_PATH, lines.join('\n') + '\n', 'utf8');
+  writeFileSync(path, lines.join('\n') + '\n', 'utf8');
 }
 
 function coerce(s: string): unknown {

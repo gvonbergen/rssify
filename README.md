@@ -28,6 +28,15 @@ node src/cli.ts list
 CLI entry: `node src/cli.ts <command>` (or `npm run`). A `bin/rssify` launcher
 is wired via `npm link` if you want it on `PATH`.
 
+## Testing
+
+See [TESTING.md](TESTING.md) for the deterministic unit, HTTP-route, and SQLite persistence suite.
+
+```sh
+npm run typecheck
+npm test
+```
+
 ## Docker
 
 ```sh

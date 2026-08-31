@@ -291,13 +291,23 @@ export function extractMetadata(rawHtml: string, url: string): ParsedMetadata {
     return out;
   }
 
+  // Canonical metadata is commonly relative. Resolve it against the fetched
+  // page before normalization, and ignore malformed values without losing the
+  // rest of the metadata extraction.
+  const resolveMetaUrl = (value: string): string | undefined => {
+    try {
+      return normalizeUrl(new URL(value, url).href);
+    } catch {
+      return undefined;
+    }
+  };
   const canonical = $('link[rel="canonical"]').first().attr('href');
-  if (canonical) out.canonical = normalizeUrl(canonical);
+  if (canonical) out.canonical = resolveMetaUrl(canonical);
 
   // og:url — the page's own canonical identity; used as fallback when the
   // <link rel=canonical> points at a different domain (cross-published content).
   const ogUrl = $('meta[property="og:url"]').first().attr('content');
-  if (ogUrl) out.ogUrl = normalizeUrl(ogUrl);
+  if (ogUrl) out.ogUrl = resolveMetaUrl(ogUrl);
 
   // JSON-LD (Article / NewsArticle / BlogPosting). Collect every block, then
   // prefer an article-typed node over the first block: sites (e.g. The

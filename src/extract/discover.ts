@@ -105,7 +105,7 @@ function collectAnchors(html: string, baseUrl: string): Raw[] {
 function collectJson(html: string, baseUrl: string): Raw[] {
   const origin = new URL(baseUrl).origin;
   const out: Raw[] = [];
-  const scripts = html.matchAll(/<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  const scripts = html.matchAll(/<script[^>]*type=["']application\/(?:ld\+)?json["'][^>]*>([\s\S]*?)<\/script>/gi);
   for (const m of scripts) {
     let data: unknown;
     try {
@@ -113,7 +113,7 @@ function collectJson(html: string, baseUrl: string): Raw[] {
     } catch {
       continue;
     }
-    const isLd = /ld\+json|json-ld/i.test(m[1].slice(0, 40));
+    const isLd = /type=["']application\/ld\+json["']/i.test(m[0]);
     walk(data, (o) => {
       const url = pick(o, URL_KEYS);
       let u: URL;
@@ -479,7 +479,7 @@ export function discoverCandidates(
 export function detectMode(cands: Candidate[]): DiscoveryMode {
   const counts: Record<string, number> = {};
   for (const c of cands.slice(0, 30)) counts[c.source] = (counts[c.source] ?? 0) + 1;
-  const json = (counts['json'] ?? 0) + (counts['uri-regex'] ?? 0);
+  const json = (counts['json'] ?? 0) + (counts['jsonld'] ?? 0) + (counts['uri-regex'] ?? 0);
   const anchors = counts['anchor'] ?? 0;
   if (json > 0 && json >= anchors) return 'embedded-json';
   if (anchors > 0) return 'anchors';

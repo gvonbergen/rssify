@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node src/cli.ts",
-    "serve": "node src/cli.ts serve"
+    "serve": "node src/cli.ts serve",
+    "test": "RSSIFY_TEST=1 TZ=UTC node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=25"
