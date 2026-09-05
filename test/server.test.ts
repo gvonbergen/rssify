@@ -121,6 +121,8 @@ test('cleaned and LLM article pages constrain oversized article images to the re
           + '<p><img src="https://cdn.test/inline.png" width="1920" height="1118" style="width:1920px;height:1118px;max-width:none"></p>'
           + '<p><img src="https://cdn.test/hostile.png" style=\'width:1920px !important;min-width:900px;aspect-ratio:16/9;border:2px solid #333\' alt="hostile"></p>'
           + '<p><img alt="a>b" class="art" src="https://cdn.test/gt.png" style="min-width:800px;height:500px !important;aspect-ratio:4/3"></p>'
+          + '<p><img data-x=" style= " src="https://cdn.test/shielded.png" style="width:900px !important;aspect-ratio:1"></p>'
+          + '<p><img src="https://cdn.test/decoy.png" style="background:url(\'a;width:10px\');border:1px;width:5px"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -139,6 +141,8 @@ test('cleaned and LLM article pages constrain oversized article images to the re
       '<html><head></head><body><article><p>Cleaned body</p>'
         + '<img src="https://cdn.test/hostile.png" style="width:1920px !important;min-width:900px;aspect-ratio:16/9" alt="hostile">'
         + '<img src="https://cdn.test/query.png?a>b" style="width:100vw !important;border:0">'
+        + '<img data-x=" style= " src="https://cdn.test/shielded.png" style="width:900px !important;aspect-ratio:1">'
+        + '<img src="https://cdn.test/decoy.png" style="background:url(\'a;width:10px\');border:1px;width:5px">'
         + '</article></body></html>',
       'utf8',
     );
@@ -161,6 +165,13 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // A raw '>' inside a quoted attribute value must not shield the style
     // attribute from the neutralizer.
     assert.match(llmHtml, /<img alt="a>b" class="art" src="https:\/\/cdn\.test\/gt\.png" style="aspect-ratio:4\/3">/);
+    // A `style=` token inside an EARLIER attribute's quoted value must not be
+    // mistaken for the style attribute (hostile !important width survives).
+    assert.match(llmHtml, /<img data-x=" style= " src="https:\/\/cdn\.test\/shielded\.png" style="aspect-ratio:1">/);
+    // Semicolons inside quoted url() values are not declaration separators:
+    // width-like fragments there must never corrupt unrelated declarations.
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/decoy\.png" style="background:url\('a;width:10px'\);border:1px">/);
+    assert.doesNotMatch(llmHtml, /width:900px|width:5px/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
@@ -173,7 +184,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(cleanedHtml, /<article><p>Cleaned body<\/p>/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9" alt="hostile">/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/query\.png\?a>b" style="border:0">/);
-    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw/);
+    assert.match(cleanedHtml, /<img data-x=" style= " src="https:\/\/cdn\.test\/shielded\.png" style="aspect-ratio:1">/);
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/decoy\.png" style="background:url\('a;width:10px'\);border:1px">/);
+    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
     // nor the app chrome index pages carry the image style.

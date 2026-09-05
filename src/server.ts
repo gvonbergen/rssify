@@ -59,21 +59,64 @@ const CLEANED_IMAGE_CSS = `img {
  * Source `width`/`height` *attributes* need no handling here: they lose to
  * the `!important` stylesheet rules on their own.
  */
+const IMG_TAG_RE = /<img\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
+const ATTR_RE = /(\s)([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
+
+/** Split a style value into declarations at semicolons that sit OUTSIDE
+ *  quoted strings and parenthesized groups (url(…), rgb(…)), so width-like
+ *  fragments embedded in quoted URLs never corrupt unrelated declarations. */
+function splitDeclarations(value: string): string[] {
+  const decls: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  let depth = 0;
+  for (const ch of value) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      depth = Math.max(depth - 1, 0);
+    } else if (ch === ';' && depth === 0) {
+      decls.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim() !== '') decls.push(cur);
+  return decls;
+}
+
 export function neutralizeImgInlineSizing(html: string): string {
-  return html.replace(/<img\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) =>
-    tag.replace(
-      /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i,
-      (_attr: string, dq: string | undefined, sq: string | undefined) => {
-        const quote = dq === undefined ? "'" : '"';
-        const kept = (dq ?? sq ?? '')
-          .split(';')
-          .filter((d) => d.trim() !== '' && !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(d))
-          .join(';');
-        if (kept.trim() === '') return '';
-        return ` style=${quote}${kept.replaceAll(quote, quote === '"' ? '&quot;' : '&#39;')}${quote}`;
-      },
-    ),
-  );
+  return html.replace(IMG_TAG_RE, (tag: string) => {
+    const openEnd = /^<img\b/i.exec(tag)![0].length;
+    const attrs = tag.slice(openEnd, -1);
+    let out = '';
+    let pos = 0;
+    let changed = false;
+    ATTR_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ATTR_RE.exec(attrs)) !== null) {
+      const value = m[4] ?? m[5] ?? '';
+      if (!/^style$/i.test(m[2]) || (m[4] === undefined && m[5] === undefined)) continue;
+      const quote = m[4] === undefined ? "'" : '"';
+      const kept = splitDeclarations(value)
+        .filter((d) => d.trim() !== '' && !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(d))
+        .join(';');
+      if (kept === value) continue;
+      changed = true;
+      const replacement =
+        kept.trim() === ''
+          ? ''
+          : `${m[1]}${m[2]}${m[3]}${quote}${kept.replaceAll(quote, quote === '"' ? '&quot;' : '&#39;')}${quote}`;
+      out += attrs.slice(pos, m.index) + replacement;
+      pos = m.index + m[0].length;
+    }
+    return changed ? tag.slice(0, openEnd) + out + attrs.slice(pos) + '>' : tag;
+  });
 }
 
 /**
