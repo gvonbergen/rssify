@@ -39,15 +39,35 @@ export const ARTICLE_IMAGE_CSS = `article img {
 }`;
 
 /**
- * Same reader constraint, injected into stored cleaned-article documents at
- * serve time. Cleaned documents carry no <article> wrapper — readability
- * keeps `<div id="readability-page-1">` — so the selector covers every image
- * in the document (the whole page IS the article). See `injectArticleCss`.
+ * Shared responsive page-shell geometry for every rendered HTML page (main
+ * index, per-feed article history, both rendered article views): ONE
+ * container contract — fluid width with a shared maximum (`50rem`, the
+ * article reading column) and equal horizontal gutters on both sides — so
+ * the main page and the article pages line up at any viewport width.
  */
-const CLEANED_IMAGE_CSS = `img {
-  max-width: 100% !important;
-  height: auto !important;
+const PAGE_SHELL_CSS = `body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 50rem;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  color: #222;
 }`;
+
+/**
+ * Post-level presentation for the rendered article views (`cleaned` and
+ * `llm`): typography, metadata line, link colors and the article-image
+ * constraint, all in one shared source so the two views cannot drift.
+ * Articles are rendered inside an <article> element (see `articlePageHtml`),
+ * which is what the image constraint is scoped to.
+ */
+const ARTICLE_PAGE_CSS = `${PAGE_SHELL_CSS}
+  h1 { font-size: 1.6rem; line-height: 1.25; }
+  .meta { color: #777; font-size: .85rem; margin-bottom: 1.5rem; word-break: break-all; }
+  article p { line-height: 1.6; margin: 0 0 1rem; }
+  ${ARTICLE_IMAGE_CSS}
+  .muted { color: #777; font-size: .85rem; }
+  .muted a { color: #555; }
+`;
 
 /**
  * Strip sizing declarations (`width`, `min-/max-width`, `height`,
@@ -247,30 +267,19 @@ export function neutralizeImgInlineSizing(html: string): string {
 }
 
 /**
- * Inject the article-page image constraint into a stored cleaned-article
- * document at serve time (created per request, so existing stored articles
- * get the fix without a re-scrape). The clean pipeline stores full-document
- * serializations (`<html><head>…<body>…`), so the style is inserted into
- * <head>; fragment-shaped stored content falls back to just after <body> or
- * the document start — browsers apply a <style> element in any position.
+ * Extract the article body of a stored cleaned document. The clean pipeline
+ * stores cheerio full-document serializations (`<html><head>…<body>…`), so
+ * the `<body>` inner HTML is the article; fragment-shaped stored files
+ * (older rows) are returned verbatim — the whole fragment IS the article.
+ * Verbatim slicing (no re-serialization) keeps the stored markup byte-exact;
+ * hostile inline img sizing is neutralized separately by the caller.
  */
-export function injectArticleCss(doc: string): string {
-  doc = neutralizeImgInlineSizing(doc);
-  const viewportMeta = /<meta[^>]+name=["']viewport["']/i.test(doc)
-    ? ''
-    : '<meta name="viewport" content="width=device-width, initial-scale=1">\n';
-  const style = `<style>${CLEANED_IMAGE_CSS}\n</style>`;
-  const head = /<head(?:\s[^>]*)?>/i.exec(doc);
-  if (head) {
-    return (
-      doc.slice(0, head.index + head[0].length) + viewportMeta + style + doc.slice(head.index + head[0].length)
-    );
-  }
-  const body = /<body[^>]*>/i.exec(doc);
-  if (body) {
-    return doc.slice(0, body.index + body[0].length) + style + doc.slice(body.index + body[0].length);
-  }
-  return style + doc;
+export function storedBodyHtml(doc: string): string {
+  const open = /<body[^>]*>/i.exec(doc);
+  if (!open) return doc;
+  const start = open.index + open[0].length;
+  const close = /<\/body\s*>/i.exec(doc.slice(start));
+  return close ? doc.slice(start, start + close.index) : doc.slice(start);
 }
 
 function positiveInteger(value: unknown): number | null {
@@ -313,8 +322,8 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     }
   };
 
-  // HTML escaping + date formatting shared by the root page and the
-  // LLM-extraction page.
+  // HTML escaping + date formatting shared by every rendered HTML page (the
+  // main index, the per-feed article history and both article views).
   const esc = (s: string): string =>
     s.replace(/[&<>"']/g, (m) =>
       m === '&' ? '&amp;' : m === '<' ? '&lt;' : m === '>' ? '&gt;' : m === '"' ? '&quot;' : '&#39;',
@@ -579,7 +588,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
 <meta charset="utf-8">
 <title>RSSify — feeds</title>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  ${PAGE_SHELL_CSS}
   h1 { border-bottom: 2px solid #eee; padding-bottom: .5rem; }
   h2 { margin: 1.6rem 0 .3rem; }
   .muted { color: #777; font-size: .85rem; }
@@ -649,7 +658,7 @@ ${blocks}
 <meta charset="utf-8">
 <title>${esc(siteTitle)} — articles</title>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  ${PAGE_SHELL_CSS}
   h1 { border-bottom: 2px solid #eee; padding-bottom: .5rem; }
   .muted { color: #777; font-size: .85rem; }
   ol.items { padding-left: 1.4rem; }
@@ -668,35 +677,63 @@ ${moreLink}
 </body></html>`;
   }
 
-  /** Render the stored LLM extraction for one item as an HTML article page
-   *  (the counterpart of the `cleaned` route — for RSS readers / comparison). */
-  function llmPageHtml(site: string, it: ItemRow, llm: LlmSidecar): string {
-    const title = llm.title || it.title || '(untitled)';
-    const link = llm.url || it.url;
-    const dateTs = llm.publishedAt ? Date.parse(llm.publishedAt) : NaN;
-    const dateStr = Number.isFinite(dateTs) ? fmt(dateTs) : fmt(it.published_at ?? it.first_seen);
-    const body = llm.html
-      ? neutralizeImgInlineSizing(sanitizeArticleHtml(llm.html))
-      : textToHtml(llm.text ?? '');
+  /** Shared breadcrumb/nav row for both rendered article views: `← site ·
+   *  cleaned · LLMextraction`. The site-name link goes to the feed's HTML
+   *  article history (`/feed/<site>/articles`, site name URL-encoded) — NOT
+   *  to the RSS XML endpoint (`/<site>`), which an RSS reader would open as
+   *  a subscription. Links are root-relative, so they work unchanged behind
+   *  a configured public/base URL. The current view is plain text; the other
+   *  view is a link when reachable (the LLM view needs a stored sidecar). */
+  const breadcrumbHtml = (site: string, it: ItemRow, view: 'cleaned' | 'llm', hasLlm: boolean): string => {
+    const itemBase = `/${esc(site)}/item/${esc(it.hash)}`;
+    const parts = [
+      `<a href="/feed/${encodeURIComponent(site)}/articles">← ${esc(site)}</a>`,
+      view === 'cleaned' ? 'cleaned' : `<a href="${itemBase}">cleaned</a>`,
+      view === 'llm' || !hasLlm ? 'LLMextraction' : `<a href="${itemBase}/llm">LLMextraction</a>`,
+    ];
+    return parts.join(' · ');
+  };
+
+  /** Shared page shell for the two rendered article views (`cleaned` at
+   *  /<site>/item/<hash> and `llm` at /<site>/item/<hash>/llm). One template
+   *  + one CSS source (ARTICLE_PAGE_CSS) so the views cannot drift apart;
+   *  only the content, metadata and breadcrumb state differ per view. `body`
+   *  is the view's article HTML (already neutralized of hostile inline img
+   *  sizing); it is placed inside <article> so ARTICLE_IMAGE_CSS constrains
+   *  every image to the reading column on both views. */
+  function articlePageHtml(args: {
+    site: string;
+    it: ItemRow;
+    view: 'cleaned' | 'llm';
+    title: string;
+    link: string;
+    dateTs: number;
+    model: string | null;
+    body: string;
+    hasLlm: boolean;
+  }): string {
+    const { site, it, view, title, link, dateTs, model, body, hasLlm } = args;
+    const meta = [
+      link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : '',
+      esc(fmt(dateTs)),
+      model ? `model: ${esc(model)}` : '',
+    ].filter(Boolean).join(' · ');
+    const empty = view === 'cleaned'
+      ? '<p class="muted">(no stored article content)</p>'
+      : '<p class="muted">(no article text extracted — paywalled or unparseable)</p>';
     return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — LLM extraction</title>
+<title>${esc(title)} — ${view === 'cleaned' ? 'cleaned' : 'LLM extraction'}</title>
 <style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 50rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  h1 { font-size: 1.6rem; line-height: 1.25; }
-  .meta { color: #777; font-size: .85rem; margin-bottom: 1.5rem; word-break: break-all; }
-  article p { line-height: 1.6; margin: 0 0 1rem; }
-  ${ARTICLE_IMAGE_CSS}
-  .muted { color: #777; font-size: .85rem; }
-  .muted a { color: #555; }
+${ARTICLE_PAGE_CSS}
 </style>
 </head><body>
-<p class="muted"><a href="/${esc(site)}">← ${esc(site)}</a> · <a href="/${esc(site)}/item/${esc(it.hash)}">cleaned</a> · LLMextraction</p>
+<p class="muted">${breadcrumbHtml(site, it, view, hasLlm)}</p>
 <h1>${esc(title)}</h1>
-<p class="meta"><a href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a> · ${esc(dateStr)}${llm.model ? ` · model: ${esc(llm.model)}` : ''}</p>
-<article>${body || '<p class="muted">(no article text extracted — paywalled or unparseable)</p>'}</article>
+<p class="meta">${meta}</p>
+<article>${body || empty}</article>
 </body></html>`;
   }
 
@@ -763,10 +800,26 @@ ${moreLink}
         const hash = plainSite(third);
         const it = getItem(db, site, hash);
         if (!it) return c.text('not found', 404);
-        const html = readContent(it.content_path);
-        if (html === null) return c.text('content missing', 404);
+        const doc = readContent(it.content_path);
+        if (doc === null) return c.text('content missing', 404);
+        // The stored cleaned document is rendered through the shared article
+        // page shell (same presentation as the LLM view; distinct content).
         // Text-only mode (ignore_images) has no images left to constrain.
-        return c.html(ignoreImagesFor(site) ? stripImages(html) : injectArticleCss(html));
+        let body = storedBodyHtml(doc);
+        if (ignoreImagesFor(site)) body = stripImages(body);
+        return c.html(
+          articlePageHtml({
+            site,
+            it,
+            view: 'cleaned',
+            title: it.title || '(untitled)',
+            link: it.url,
+            dateTs: it.published_at ?? it.first_seen,
+            model: null,
+            body: neutralizeImgInlineSizing(body),
+            hasLlm: readLlmSidecar(site, hash) !== null,
+          }),
+        );
       }
       return c.text('not found', 404);
     }
@@ -786,7 +839,23 @@ ${moreLink}
             404,
           );
         }
-        return c.html(llmPageHtml(site, it, llm));
+        return c.html(
+          articlePageHtml({
+            site,
+            it,
+            view: 'llm',
+            title: llm.title || it.title || '(untitled)',
+            link: llm.url || it.url,
+            dateTs: llm.publishedAt && Number.isFinite(Date.parse(llm.publishedAt))
+              ? Date.parse(llm.publishedAt)
+              : it.published_at ?? it.first_seen,
+            model: llm.model ?? null,
+            body: llm.html
+              ? neutralizeImgInlineSizing(sanitizeArticleHtml(llm.html))
+              : textToHtml(llm.text ?? ''),
+            hasLlm: true,
+          }),
+        );
       }
       return c.text('not found', 404);
     }

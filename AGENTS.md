@@ -8,21 +8,31 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Article rendering
 
 - Both rendered article views — `/site/item/<hash>` (cleaned) and
-  `/site/item/<hash>/llm` — must keep article images inside the reading
-  column. The shared defenses live in `src/server.ts`: `ARTICLE_IMAGE_CSS`
-  (the `<article>`-scoped rule used by the LLM page template),
-  `injectArticleCss()` (serve-time injection into stored cleaned docs), and
-  `neutralizeImgInlineSizing()` (strips hostile inline img sizing
-  declarations — the exact property set lives in the FUNCTIONS.md export
-  table; inline `!important` sizing would otherwise outrank the reader CSS,
-  and `min-width` clamps `max-width`). Any
-  new article-adjacent HTML page should reuse them; never let a stored
+  `/site/item/<hash>/llm` — render through ONE shared page shell
+  (`articlePageHtml` + `ARTICLE_PAGE_CSS` in `src/server.ts`); only the
+  content, metadata and breadcrumb state differ per view. New
+  article-adjacent pages must reuse that shell instead of copying CSS.
+- Article images must stay inside the reading column. The defenses live in
+  `src/server.ts`: `ARTICLE_IMAGE_CSS` (the `<article>`-scoped rule in
+  `ARTICLE_PAGE_CSS`) and `neutralizeImgInlineSizing()` (strips hostile
+  inline img sizing declarations — the exact property set lives in the
+  FUNCTIONS.md export table; inline `!important` sizing would otherwise
+  outrank the reader CSS, and `min-width` clamps `max-width`). Stored
+  cleaned docs are full-document serializations; `storedBodyHtml()`
+  extracts the verbatim `<body>` content for the shell. Never let a stored
   `<img>` render at natural size (source artwork is typically 1200–2000px wide).
+- The breadcrumb site-name link on article views targets the HTML article
+  history `/feed/<site>/articles` (site name URL-encoded) — never the RSS
+  XML endpoint `/<site>`, which an RSS reader would open as a subscription.
+- Every HTML page (main index, `/feed/<site>/articles`, article views)
+  shares one container contract: `PAGE_SHELL_CSS` (50rem max width, 1rem
+  gutters). Don't introduce a page with its own body geometry.
 - Stored cleaned content is cheerio-serialized as a FULL document
   (`<html><head>…<body>…`) with no `<article>` wrapper — readability keeps
-  `<div id="readability-page-1">` — so a page-scoped image rule targeting
-  only `<article>` silently misses the cleaned view; the cleaned-doc
-  injection uses an unqualified `img` rule (the whole page is the article).
+  `<div id="readability-page-1">`. The serve path extracts the verbatim
+  `<body>` content (`storedBodyHtml()`) and the shell places it inside
+  `<article>`, so the `<article>`-scoped image rule applies to both views
+  without touching stored data.
 
 ## Maintaining this file
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createApp, injectArticleCss, neutralizeImgInlineSizing } from '../src/server.ts';
+import { createApp, neutralizeImgInlineSizing, storedBodyHtml } from '../src/server.ts';
 import { addItemSection, insertItem } from '../src/db.ts';
 import { itemRow, makeTempDir, openTempDb, removeTempDir, seedItemFile, seedSite } from './helpers.ts';
 
@@ -213,10 +213,11 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
     assert.equal(cleaned.status, 200);
     const cleanedHtml = await cleaned.text();
-    // Stored cleaned documents also get the constraint injected into <head>
-    // (selector covers the doc's readability wrapper divs) plus a viewport
-    // meta for mobile, with the article markup kept verbatim.
-    assert.match(cleanedHtml, /<head><meta name="viewport" content="width=device-width, initial-scale=1">\n<style>img \{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}\s*<\/style>/);
+    // The cleaned view renders through the shared article page shell: same
+    // shell/typography/media constraints as the LLM view (asserted in
+    // tests/article-pages.test.ts), with the stored cleaned markup kept
+    // verbatim inside <article> and hostile inline sizing neutralized.
+    assert.match(cleanedHtml, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
     assert.match(cleanedHtml, /<article><p>Cleaned body<\/p>/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9" alt="hostile">/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/query\.png\?a>b" style="border:0">/);
@@ -249,31 +250,21 @@ test('cleaned and LLM article pages constrain oversized article images to the re
   }
 });
 
-test('injectArticleCss places the reader constraint into any stored-content shape', () => {
-  const style = /<style>img \{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}\s*<\/style>/;
-  // Full-document serialization (the clean pipeline's stored shape) → <head>,
-  // with the viewport meta added once.
-  const full = injectArticleCss('<html><head></head><body><p>Body</p></body></html>');
-  assert.match(full, /<head><meta name="viewport" content="width=device-width, initial-scale=1">\s*<style>img \{/);
-  // A document that already declares a viewport keeps its own meta.
-  const viewed = injectArticleCss('<html><head><meta name="viewport" content="width=device-width"><style>s</style></head><body><p>Body</p></body></html>');
-  assert.equal((viewed.match(/name=["']viewport["']/g) ?? []).length, 1);
-  assert.match(viewed, /<style>img \{/);
-  // Fragment with a body tag → right after <body>.
-  const bodyFrag = injectArticleCss('<body><p>Body</p></body>');
-  assert.ok(bodyFrag.startsWith('<body><style>img {'));
-  // Bare fragment → prepended; browsers still apply it.
-  const bare = injectArticleCss('<p>Body</p>');
-  assert.match(bare, style);
-  assert.ok(bare.endsWith('<p>Body</p>'));
-  // <header> is never mistaken for <head>: a fragment-shaped doc starting
-  // with a header element gets the style prepended, not nested inside it.
-  const headerFrag = injectArticleCss('<header class="site"><p>Body</p></header>');
-  assert.ok(headerFrag.startsWith('<style>img {'));
-  assert.ok(headerFrag.endsWith('<header class="site"><p>Body</p></header>'));
-  // A head tag with attributes still matches.
-  const headAttrs = injectArticleCss('<html><head lang="en"></head><body></body></html>');
-  assert.match(headAttrs, /<head lang="en"><meta name="viewport"/);
+test('storedBodyHtml extracts the article body from any stored-content shape', () => {
+  // Full-document serialization (the clean pipeline's stored shape) → the
+  // verbatim <body> inner HTML; the empty <head> is dropped.
+  const full = storedBodyHtml('<html><head></head><body><p>Body</p><img src="a.png"></body></html>');
+  assert.equal(full, '<p>Body</p><img src="a.png">');
+  // A body tag with attributes still matches.
+  assert.equal(storedBodyHtml('<html><body class="doc"><p>Body</p></body></html>'), '<p>Body</p>');
+  // Fragment with a body tag → the body inner HTML.
+  assert.equal(storedBodyHtml('<body><p>Body</p></body>'), '<p>Body</p>');
+  // Bare fragment → returned verbatim (the whole fragment IS the article).
+  assert.equal(storedBodyHtml('<p>Body</p>'), '<p>Body</p>');
+  // Unterminated body tag: everything after the open tag is the article.
+  assert.equal(storedBodyHtml('<html><body><p>Body</p>'), '<p>Body</p>');
+  // <header> is never mistaken for <body>.
+  assert.equal(storedBodyHtml('<header class="site"><p>Body</p></header>'), '<header class="site"><p>Body</p></header>');
 });
 
 test('HTTP item route honors per-site ignore_images setting', async () => {
@@ -291,7 +282,9 @@ test('HTTP item route honors per-site ignore_images setting', async () => {
     assert.equal(response.status, 200);
     const body = await response.text();
     assert.match(body, /Text/);
-    assert.doesNotMatch(body, /img|caption/);
+    // No image markup of any kind survives text-only mode (the shell's own
+    // `article img` reader-constraint CSS is not an image element).
+    assert.doesNotMatch(body, /<img|<picture|<figcaption|caption/);
   } finally {
     db.close();
     await removeTempDir(dir);
