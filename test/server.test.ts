@@ -130,6 +130,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
           + '<p><img src="https://cdn.test/urlapos.png" style="background:url(don\'t.png);width:1920px !important"></p>'
           + '<p><img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented"></p>'
           + '<p><img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min"></p>'
+          + '<p><img src="https://cdn.test/escaped.png" style="w\\69 dth:1920px !important;aspect-ratio:2/1" alt="escaped"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -157,6 +158,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         + '<img src=\'https://cdn.test/squrl.png\' style=\'background:url(don"t.png);min-width:600px !important\'>'
         + '<img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented">'
         + '<img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min">'
+        + '<img src="https://cdn.test/escaped-min.png" style="\\6d in-width:900px !important" alt="escaped-min">'
         + '</article></body></html>',
       'utf8',
     );
@@ -196,6 +198,10 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // plain and min-width variants are removed, unrelated borders kept.
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented\.png" style="border:2px dotted red" alt="commented">/);
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented-min\.png" style="aspect-ratio:16\/9" alt="commented-min">/);
+    // CSS escape sequences inside property names are decoded by the browser's
+    // tokenizer (`\69 ` is `i`), so escape-camouflaged sizing must be
+    // detected and removed just like comment-camouflaged sizing.
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/escaped\.png" style="aspect-ratio:2\/1" alt="escaped">/);
     assert.doesNotMatch(llmHtml, /1200px|700px/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
@@ -217,6 +223,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(cleanedHtml, /<img src='https:\/\/cdn\.test\/squrl\.png' style='background:url\(don"t\.png\)'>/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/commented\.png" style="border:2px dotted red" alt="commented">/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/commented-min\.png" style="aspect-ratio:16\/9" alt="commented-min">/);
+    // Escape-camouflaged min-width (which clamps the reader constraint's
+    // max-width) is removed on the cleaned route too.
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/escaped-min\.png" alt="escaped-min">/);
     assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px|1200px|700px/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
@@ -317,5 +326,42 @@ test('neutralizeImgInlineSizing strips comment-camouflaged sizing declarations o
   assert.equal(
     neutralizeImgInlineSizing('<img src="a.png" style="background:url(/*x*/img.png);width:8px">'),
     '<img src="a.png" style="background:url(/*x*/img.png)">',
+  );
+});
+
+test('neutralizeImgInlineSizing strips escape-camouflaged sizing declarations only', () => {
+  // A CSS escape inside a property name is decoded by the browser's
+  // tokenizer (`\69 ` is `i`), so escape-encoded sizing properties must be
+  // detected and removed, keeping unrelated declarations verbatim.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" alt="x" style="w\\69 dth:1920px !important;border:1px solid">'),
+    '<img src="a.png" alt="x" style="border:1px solid">',
+  );
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="\\77idth:800px;aspect-ratio:16/9">'),
+    '<img src="a.png" style="aspect-ratio:16/9">',
+  );
+  // Escaped min-width clamps the reader constraint's max-width, so it must
+  // be removed too; the style attribute drops entirely when empty.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="\\6d in-width:900px !important">'),
+    '<img src="a.png">',
+  );
+  // Escapes combine with comment camouflage.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="\\77/*x*/idth:700px">'),
+    '<img src="a.png">',
+  );
+  // Escapes are decoded for matching only: an unrelated declaration keeps
+  // its verbatim text, escapes included.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="color:red;\\66 ont-family:x;width:10px">'),
+    '<img src="a.png" style="color:red;\\66 ont-family:x">',
+  );
+  // An escaped colon makes the property unknown (the browser drops the
+  // declaration) — never a sizing one, so it stays verbatim.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="w\\3A idth:1920px;color:red">'),
+    '<img src="a.png" style="w\\3A idth:1920px;color:red">',
   );
 });

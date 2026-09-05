@@ -56,9 +56,10 @@ const CLEANED_IMAGE_CSS = `img {
  * declarations outrank any author stylesheet, and `min-width` clamps
  * `max-width`, so no CSS rule could fully enforce the reader constraint
  * against a hostile source image — removal is the only reliable neutralizer.
- * Declarations are matched on comment-stripped text (outside quoted strings
- * and parens), so a comment spliced into a sizing property (e.g. `width:`,
- * a CSS comment, then `1920px !important`) cannot hide the declaration from
+ * Declarations are matched on comment-stripped, escape-decoded text (outside
+ * quoted strings and parens), so neither a comment spliced into a sizing
+ * property (e.g. `width:`, a CSS comment, then `1920px !important`) nor an
+ * escape-encoded property name (`w\69 dth`) can hide the declaration from
  * the browser — which tokenizes it back to `width:1920px !important` — while
  * unrelated declarations keep their verbatim text. Source `width`/`height`
  * *attributes* need no handling here: they lose to the `!important`
@@ -102,6 +103,24 @@ function stripCssComments(value: string): string {
     }
   }
   return out;
+}
+
+/** Decode CSS escape sequences exactly as the browser's tokenizer does (a
+ *  backslash + 1–6 hex digits + optional single whitespace, or a backslash
+ *  before any other character), so escape-camouflaged property names such as
+ *  `w\69 dth` or `\77idth` are matched as the properties they become. Used
+ *  for matching only — kept declarations are re-emitted verbatim. */
+function decodeCssEscapes(text: string): string {
+  return text.replace(
+    /\\([0-9a-fA-F]{1,6})(\r\n|[ \t\r\n\f])?|\\(.)/g,
+    (_m, hex: string | undefined, _ws, lit: string | undefined) => {
+      if (hex === undefined) return lit ?? '';
+      const code = parseInt(hex, 16);
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+        ? String.fromCodePoint(code)
+        : '\uFFFD';
+    },
+  );
 }
 
 /** Split a style value into declarations at semicolons that sit OUTSIDE
@@ -176,6 +195,20 @@ function splitDeclarations(value: string): string[] {
   return decls;
 }
 
+const SIZING_PROP_RE = /^(?:min-|max-)?(?:width|height)$/;
+
+/** True when a declaration sets one of the sizing properties. The property
+ *  is read on comment-stripped, escape-decoded text — what the browser
+ *  actually tokenizes — as the segment before the first colon; an escaped
+ *  colon (`\3A`) makes the property unknown (the browser drops the whole
+ *  declaration) and never a sizing one. */
+function isSizingDeclaration(decl: string): boolean {
+  const text = stripCssComments(decl);
+  const colon = text.indexOf(':');
+  if (colon === -1) return false;
+  return SIZING_PROP_RE.test(decodeCssEscapes(text.slice(0, colon)).trim().toLowerCase());
+}
+
 export function neutralizeImgInlineSizing(html: string): string {
   return html.replace(IMG_TAG_RE, (tag: string) => {
     const openEnd = /^<img\b/i.exec(tag)![0].length;
@@ -191,15 +224,12 @@ export function neutralizeImgInlineSizing(html: string): string {
       // is always defined here; only the attribute name can disqualify a match.
       if (!/^style$/i.test(m[2])) continue;
       const quote = m[4] === undefined ? "'" : '"';
-      // Sizing declarations are detected on the comment-stripped text (the
-      // browser drops comments at parse time too), so `width/*x*/:1920px`
-      // cannot slip past; unrelated declarations keep their verbatim text.
+      // Sizing declarations are detected on the normalized match text
+      // (comment-stripped, escape-decoded — what the browser tokenizes), so
+      // camouflaged properties cannot slip past; unrelated declarations
+      // keep their verbatim text.
       const kept = splitDeclarations(value)
-        .filter(
-          (d) =>
-            d.trim() !== '' &&
-            !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(stripCssComments(d)),
-        )
+        .filter((d) => d.trim() !== '' && !isSizingDeclaration(d))
         .join(';');
       if (kept === value) continue;
       changed = true;
