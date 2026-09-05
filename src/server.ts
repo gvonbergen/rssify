@@ -195,13 +195,15 @@ function splitDeclarations(value: string): string[] {
   return decls;
 }
 
-const SIZING_PROP_RE = /^(?:min-|max-)?(?:width|height)$/;
+const SIZING_PROP_RE = /^(?:min-|max-)?(?:width|height|inline-size|block-size)$/;
 
 /** True when a declaration sets one of the sizing properties. The property
  *  is read on comment-stripped, escape-decoded text — what the browser
  *  actually tokenizes — as the segment before the first colon; an escaped
  *  colon (`\3A`) makes the property unknown (the browser drops the whole
- *  declaration) and never a sizing one. */
+ *  declaration) and never a sizing one. The logical properties `inline-size`
+ *  and `block-size` map to width/height in horizontal writing modes, so they
+ *  are stripped symmetrically with their min-/max- variants. */
 function isSizingDeclaration(decl: string): boolean {
   const text = stripCssComments(decl);
   const colon = text.indexOf(':');

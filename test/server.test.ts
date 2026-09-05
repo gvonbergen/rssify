@@ -131,6 +131,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
           + '<p><img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented"></p>'
           + '<p><img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min"></p>'
           + '<p><img src="https://cdn.test/escaped.png" style="w\\69 dth:1920px !important;aspect-ratio:2/1" alt="escaped"></p>'
+          + '<p><img src="https://cdn.test/logical.png" style="inline-size:1200px !important;min-block-size:500px" alt="logical"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -159,6 +160,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         + '<img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented">'
         + '<img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min">'
         + '<img src="https://cdn.test/escaped-min.png" style="\\6d in-width:900px !important" alt="escaped-min">'
+        + '<img src="https://cdn.test/logical.png" style="inline-size:1200px !important;min-block-size:500px" alt="logical">'
         + '</article></body></html>',
       'utf8',
     );
@@ -202,7 +204,10 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // tokenizer (`\69 ` is `i`), so escape-camouflaged sizing must be
     // detected and removed just like comment-camouflaged sizing.
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/escaped\.png" style="aspect-ratio:2\/1" alt="escaped">/);
-    assert.doesNotMatch(llmHtml, /1200px|700px/);
+    // Logical sizing properties (inline-size/block-size, which map to
+    // width/height in horizontal writing modes) are stripped too.
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/logical\.png" alt="logical">/);
+    assert.doesNotMatch(llmHtml, /1200px|700px|500px/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
@@ -226,7 +231,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // Escape-camouflaged min-width (which clamps the reader constraint's
     // max-width) is removed on the cleaned route too.
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/escaped-min\.png" alt="escaped-min">/);
-    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px|1200px|700px/);
+    // Logical sizing is removed on the cleaned route too.
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/logical\.png" alt="logical">/);
+    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px|1200px|700px|500px/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
     // nor the app chrome index pages carry the image style.
@@ -363,5 +370,38 @@ test('neutralizeImgInlineSizing strips escape-camouflaged sizing declarations on
   assert.equal(
     neutralizeImgInlineSizing('<img src="a.png" style="w\\3A idth:1920px;color:red">'),
     '<img src="a.png" style="w\\3A idth:1920px;color:red">',
+  );
+});
+
+test('neutralizeImgInlineSizing strips logical inline-size/block-size sizing declarations', () => {
+  // inline-size maps to width (and block-size to height) in horizontal
+  // writing modes, so hostile logical sizing must not survive either —
+  // including their min-/max- variants, which clamp the reader constraint.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="inline-size:1920px !important;aspect-ratio:16/9">'),
+    '<img src="a.png" style="aspect-ratio:16/9">',
+  );
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="block-size:900px !important;border:0">'),
+    '<img src="a.png" style="border:0">',
+  );
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="min-inline-size:700px;max-inline-size:900px">'),
+    '<img src="a.png">',
+  );
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="min-block-size:600px;max-block-size:800px">'),
+    '<img src="a.png">',
+  );
+  // Logical sizing combines with the other camouflage classes: comment and
+  // escape forms are caught, unrelated declarations stay verbatim.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="i\\6e/*x*/line-size:900px !important;color:red">'),
+    '<img src="a.png" style="color:red">',
+  );
+  // Unrelated logical-ish declarations are untouched.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="margin-inline-size:5px;width:10px">'),
+    '<img src="a.png" style="margin-inline-size:5px">',
   );
 });
