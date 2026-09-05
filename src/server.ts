@@ -331,6 +331,12 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
   const fmt = (ts: number | null): string =>
     ts == null ? '—' : new Date(ts).toLocaleString('en-GB', { timeZoneName: 'short' });
 
+  // Internal item link for a stored article: the site segment is
+  // percent-encoded so a literal `%` in a site name survives browser URL
+  // parsing and the route's decodeURIComponent (single rule shared by the
+  // breadcrumb and every article-row link).
+  const siteItemHref = (site: string, hash: string): string => `/${encodeURIComponent(site)}/item/${hash}`;
+
   // Per-site text-only mode: per-site config_json.ignore_images wins, else the
   // instance default (defaults.ignore_images). Applied at serve time so config
   // changes take effect immediately without re-scraping.
@@ -396,7 +402,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
    *    pick wins, else the stored source URL — the same resolution the LLM
    *    page and the feed use); omitted when no such URL exists. */
   const articleItemHtml = (site: string, it: ItemRow, llm: LlmSidecar | null): string => {
-    const cleanHref = `/${site}/item/${it.hash}`;
+    const cleanHref = siteItemHref(site, it.hash);
     const llmHref = `${cleanHref}/llm`;
     const canonicalUrl = llm?.url || it.url || '';
     const titleHref = llm ? llmHref : canonicalUrl || cleanHref;
@@ -687,7 +693,7 @@ ${moreLink}
    *  by the browser and 404). The current view is plain text; the other
    *  view is a link when reachable (the LLM view needs a stored sidecar). */
   const breadcrumbHtml = (site: string, it: ItemRow, view: 'cleaned' | 'llm', hasLlm: boolean): string => {
-    const itemBase = `/${encodeURIComponent(site)}/item/${esc(it.hash)}`;
+    const itemBase = siteItemHref(site, esc(it.hash));
     const parts = [
       `<a href="/feed/${encodeURIComponent(site)}/articles">← ${esc(site)}</a>`,
       view === 'cleaned' ? 'cleaned' : `<a href="${itemBase}">cleaned</a>`,

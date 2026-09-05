@@ -111,6 +111,48 @@ test('breadcrumb site-name hrefs are URL-encoded for unsafe site names', async (
   });
 });
 
+test('article-row links percent-encode the site segment and round-trip on every route', async () => {
+  const dir = await makeTempDir();
+  const { db, config } = openTempDb(dir);
+  try {
+    const site = 'pct%20name';
+    seedSite(db, site);
+    const contentPath = join(dir, 'data', site, 'hash-1.html');
+    await mkdir(join(dir, 'data', site), { recursive: true });
+    await writeFile(contentPath, '<html><head></head><body><p>Cleaned body</p></body></html>', 'utf8');
+    insertItem(db, itemRow(site, 'hash-1', contentPath));
+    await writeFile(
+      join(dir, 'data', site, 'hash-1.llm.json'),
+      JSON.stringify({ url: 'https://canonical.example/p/1', title: 'LLM Heading', html: '<p>LLM body</p>', model: 'm' }),
+      'utf8',
+    );
+    const app = createApp(db, config);
+    // Every surface rendering articleItemHtml — the root overview and the
+    // feed's article history — must carry the percent-encoded row links
+    // (cleaned + title/LLM), exactly like the breadcrumb links.
+    const encodedClean = '/pct%2520name/item/hash-1';
+    const encodedLlm = '/pct%2520name/item/hash-1/llm';
+    for (const pagePath of ['/', `/feed/${encodeURIComponent(site)}/articles`]) {
+      const res = await app.request(`http://internal.test${pagePath}`);
+      assert.equal(res.status, 200, pagePath);
+      const html = await res.text();
+      assert.match(html, new RegExp(`href="${encodedClean}">cleaned</a>`));
+      assert.match(html, new RegExp(`class="title" href="${encodedLlm}"`));
+      // The raw (un-encoded) site segment must not appear in row hrefs — the
+      // browser would re-decode the literal %20 and 404 on the route.
+      assert.doesNotMatch(html, /href="\/pct%20name\/item\//);
+    }
+    // The exact hrefs rendered above must round-trip: requesting each one
+    // serves the item/LLM routes (200), never a 404.
+    for (const path of [encodedClean, encodedLlm]) {
+      assert.equal((await app.request(`http://internal.test${path}`)).status, 200, path);
+    }
+  } finally {
+    db.close();
+    await removeTempDir(dir);
+  }
+});
+
 test('cleaned and LLM views share one page shell: byte-identical style blocks', async () => {
   await withPages({}, async ({ cleaned, llm }) => {
     assert.equal(styleBlock(cleaned), styleBlock(llm!));
