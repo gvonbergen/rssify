@@ -391,29 +391,32 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     }
   };
 
-  /** Shared article-list row: `Title · cleaned · original`.
-   *  - Title opens RSSify's LLM extraction view; without a stored LLM sidecar
-   *    it falls back to the canonical external URL (the pre-change title
-   *    target, mirroring the feed's llm→tags fallback), and if even that is
-   *    missing, to the cleaned view — the title link is never dead.
+  /** Shared article-list row: `Title · cleaned · LLMextraction · original`.
+   *  - Title ALWAYS opens the stored cleaned article view
+   *    (`/<site>/item/<hash>`) on every list surface — never the LLM view,
+   *    the external site, or plain text, whether or not a sidecar exists.
    *  - `cleaned` keeps opening the stored cleaned article view.
-   *  - `original` (replacing the former `LLMextraction` slot) opens the
-   *    canonical external scraped-source URL (the LLM sidecar's canonical
-   *    pick wins, else the stored source URL — the same resolution the LLM
-   *    page and the feed use); omitted when no such URL exists. */
+   *  - `LLMextraction` (only when a stored LLM sidecar exists) opens the LLM
+   *    extraction view — reachable without the title pointing at it.
+   *  - `original` opens the canonical external scraped-source URL (the LLM
+   *    sidecar's canonical pick wins, else the stored source URL — the same
+   *    resolution the LLM page and the feed use); omitted when no such URL
+   *    exists. */
   const articleItemHtml = (site: string, it: ItemRow, llm: LlmSidecar | null): string => {
     const cleanHref = siteItemHref(site, it.hash);
     const llmHref = `${cleanHref}/llm`;
     const canonicalUrl = llm?.url || it.url || '';
-    const titleHref = llm ? llmHref : canonicalUrl || cleanHref;
-    const titleAttrs = !llm && canonicalUrl ? ' target="_blank" rel="noopener"' : '';
+    const titleHref = cleanHref;
     const original = canonicalUrl
       ? `<span class="muted">· <a class="original" href="${esc(canonicalUrl)}" target="_blank" rel="noopener">original</a></span>`
       : '';
+    const llmLink = llm
+      ? `<span class="muted">· <a class="llm" href="${esc(llmHref)}">LLMextraction</a></span>`
+      : '';
     return `<li class="item">
       <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
-      <a class="title" href="${esc(titleHref)}"${titleAttrs}>${esc(it.title || '(untitled)')}</a>
-      <span class="muted">· <a class="cleaned" href="${esc(cleanHref)}">cleaned</a></span>${original}
+      <a class="title" href="${esc(titleHref)}">${esc(it.title || '(untitled)')}</a>
+      <span class="muted">· <a class="cleaned" href="${esc(cleanHref)}">cleaned</a></span>${llmLink}${original}
     </li>`;
   };
 
