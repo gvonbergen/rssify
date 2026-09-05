@@ -95,8 +95,8 @@ Server built by `createApp(db, config, opts)` (`src/server.ts`), bound by `rssif
 | `GET /<site>` or `/<site>.xml` | Merged RSS 2.0 feed for the site |
 | `GET /<site>/<section>` or `/<site>/<section>.xml` | Section-scoped RSS feed |
 | `GET /<site>/status` | JSON: site + per-section item counts, last scrape |
-| `GET /<site>/item/<hash>` or `/<hash>.html` | Cleaned article HTML (read from `content_path`), serve-time reader constraint injected (`injectArticleCss`: image-fit CSS + viewport meta + inline img sizing neutralized); stripped of images instead when `ignore_images` |
-| `GET /<site>/item/<hash>/llm` | LLM-extracted article rendered as HTML (from `data/<site>/<hash>.llm.json`); 404 with hint when no sidecar stored |
+| `GET /<site>/item/<hash>` or `/<hash>.html` | Cleaned article rendered through the shared article page shell (breadcrumb → `/feed/<site>/articles` article history, title, source link + date, shared typography/image constraints; body verbatim from `content_path` with inline img sizing neutralized); images stripped instead when `ignore_images` |
+| `GET /<site>/item/<hash>/llm` | LLM-extracted article rendered as HTML through the same shell (from `data/<site>/<hash>.llm.json`); 404 with hint when no sidecar stored |
 | any other | 404 |
 
 Feed item model: `<description>` = full article body text, `<content:encoded>` = full cleaned
@@ -451,9 +451,9 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Export | Signature | Notes |
 |---|---|---|
 | `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
-| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`) used by the LLM page template |
+| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`), part of `ARTICLE_PAGE_CSS` — the shared style source for both article views |
 | `neutralizeImgInlineSizing` | `(html) → string` | Strips sizing declarations — `width`/`height` and the logical `inline-size`/`block-size`, each with `min-`/`max-` variants — from `<img>` inline `style` attributes (quote- and paren-aware, `!important` or not), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
-| `injectArticleCss` | `(doc) → string` | Serve-time reader constraint for stored cleaned docs (fixes existing articles without re-scrape): neutralizes inline img sizing, injects viewport meta + unqualified `img` CSS into `<head>` (falls back to after `<body>` or doc start for fragment-shaped docs) |
+| `storedBodyHtml` | `(doc) → string` | Extracts the verbatim `<body>` inner HTML of a stored cleaned document (the clean pipeline's full-document serialization); fragment-shaped stored files are returned verbatim |
 
 Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at
@@ -467,7 +467,12 @@ external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
 "Show more articles" links to the dedicated page),
 `feedArticlesPageHtml` (dedicated `/feed/<site>/articles` page: identifies the
 feed, back link to the index, bounded progressive `limit`/`offset` paging),
-`llmPageHtml` (renders the stored LLM extraction as an HTML article page).
+`breadcrumbHtml` (shared article-view breadcrumb: `← site · cleaned ·
+LLMextraction` — the site name opens the HTML article history at
+`/feed/<site>/articles`, URL-encoded, never the RSS XML endpoint) and
+`articlePageHtml` (shared shell rendering BOTH article views — cleaned and
+LLM — with one CSS source, `ARTICLE_PAGE_CSS`, so they cannot drift; only
+content, metadata and breadcrumb state differ per view).
 Exported limit helpers: `normalizeWebsiteItemLimit` safely falls back and caps
 website article limits at 1000; `DEFAULT_WEBSITE_ITEM_LIMIT` and
 `MAX_WEBSITE_ITEM_LIMIT` expose those bounds.
