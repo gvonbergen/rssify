@@ -123,6 +123,11 @@ test('cleaned and LLM article pages constrain oversized article images to the re
           + '<p><img alt="a>b" class="art" src="https://cdn.test/gt.png" style="min-width:800px;height:500px !important;aspect-ratio:4/3"></p>'
           + '<p><img data-x=" style= " src="https://cdn.test/shielded.png" style="width:900px !important;aspect-ratio:1"></p>'
           + '<p><img src="https://cdn.test/decoy.png" style="background:url(\'a;width:10px\');border:1px;width:5px"></p>'
+          // An unbalanced quote character inside the style value (ordinary
+          // markup: an apostrophe in a font name or in an unquoted url())
+          // must not shield the following hostile declarations.
+          + '<p><img src="https://cdn.test/apos.png" style="font-family:O\'Reilly;width:1920px !important;aspect-ratio:3/2"></p>'
+          + '<p><img src="https://cdn.test/urlapos.png" style="background:url(don\'t.png);width:1920px !important"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -143,6 +148,11 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         + '<img src="https://cdn.test/query.png?a>b" style="width:100vw !important;border:0">'
         + '<img data-x=" style= " src="https://cdn.test/shielded.png" style="width:900px !important;aspect-ratio:1">'
         + '<img src="https://cdn.test/decoy.png" style="background:url(\'a;width:10px\');border:1px;width:5px">'
+        // Single-quoted style attributes carrying an unbalanced double quote
+        // (raw `"` is legal inside single-quoted attribute values) followed
+        // by hostile sizing declarations.
+        + '<img src=\'https://cdn.test/dq.png\' style=\'font-family:O"Reilly;width:900px !important;height:5px\'>'
+        + '<img src=\'https://cdn.test/squrl.png\' style=\'background:url(don"t.png);min-width:600px !important\'>'
         + '</article></body></html>',
       'utf8',
     );
@@ -171,6 +181,11 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // Semicolons inside quoted url() values are not declaration separators:
     // width-like fragments there must never corrupt unrelated declarations.
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/decoy\.png" style="background:url\('a;width:10px'\);border:1px">/);
+    // An unbalanced apostrophe in the style value must not poison the
+    // declaration splitting: the hostile width that follows is still stripped
+    // and the unrelated declarations stay byte-for-byte.
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/apos\.png" style="font-family:O'Reilly;aspect-ratio:3\/2">/);
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/urlapos\.png" style="background:url\(don't\.png\)">/);
     assert.doesNotMatch(llmHtml, /width:900px|width:5px/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
@@ -186,6 +201,10 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/query\.png\?a>b" style="border:0">/);
     assert.match(cleanedHtml, /<img data-x=" style= " src="https:\/\/cdn\.test\/shielded\.png" style="aspect-ratio:1">/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/decoy\.png" style="background:url\('a;width:10px'\);border:1px">/);
+    // Same unbalanced-quote robustness on the cleaned route, including the
+    // single-quoted attribute form where the unbalanced quote is a raw `"`.
+    assert.match(cleanedHtml, /<img src='https:\/\/cdn\.test\/dq\.png' style='font-family:O"Reilly'>/);
+    assert.match(cleanedHtml, /<img src='https:\/\/cdn\.test\/squrl\.png' style='background:url\(don"t\.png\)'>/);
     assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML

@@ -64,22 +64,28 @@ const ATTR_RE = /(\s)([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
 
 /** Split a style value into declarations at semicolons that sit OUTSIDE
  *  quoted strings and parenthesized groups (url(…), rgb(…)), so width-like
- *  fragments embedded in quoted URLs never corrupt unrelated declarations. */
+ *  fragments embedded in quoted URLs never corrupt unrelated declarations.
+ *  Quote characters inside a parenthesized group are ordinary data (an
+ *  unbalanced apostrophe in `url(don't.png)` must not shield the rest of the
+ *  value), and if a quote is still open at the end of the value the split
+ *  falls back to quote-blind so a hostile declaration can never hide behind
+ *  an unclosed string. */
 function splitDeclarations(value: string): string[] {
   const decls: string[] = [];
   let cur = '';
   let quote: string | null = null;
   let depth = 0;
   for (const ch of value) {
-    if (quote !== null) {
+    if (depth > 0) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+    } else if (quote !== null) {
       if (ch === quote) quote = null;
     } else if (ch === '"' || ch === "'") {
       quote = ch;
     } else if (ch === '(') {
       depth++;
-    } else if (ch === ')') {
-      depth = Math.max(depth - 1, 0);
-    } else if (ch === ';' && depth === 0) {
+    } else if (ch === ';') {
       decls.push(cur);
       cur = '';
       continue;
@@ -87,6 +93,7 @@ function splitDeclarations(value: string): string[] {
     cur += ch;
   }
   if (cur.trim() !== '') decls.push(cur);
+  if (quote !== null) return value.split(';');
   return decls;
 }
 
