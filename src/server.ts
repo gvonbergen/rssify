@@ -56,41 +56,120 @@ const CLEANED_IMAGE_CSS = `img {
  * declarations outrank any author stylesheet, and `min-width` clamps
  * `max-width`, so no CSS rule could fully enforce the reader constraint
  * against a hostile source image — removal is the only reliable neutralizer.
- * Source `width`/`height` *attributes* need no handling here: they lose to
- * the `!important` stylesheet rules on their own.
+ * Declarations are matched on comment-stripped text (outside quoted strings
+ * and parens), so a comment spliced into a sizing property (e.g. `width:`,
+ * a CSS comment, then `1920px !important`) cannot hide the declaration from
+ * the browser — which tokenizes it back to `width:1920px !important` — while
+ * unrelated declarations keep their verbatim text. Source `width`/`height`
+ * *attributes* need no handling here: they lose to the `!important`
+ * stylesheet rules on their own.
  */
 const IMG_TAG_RE = /<img\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
 const ATTR_RE = /(\s)([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
 
+/** Strip CSS comments (a `/*` … `*` + `/` span) from a string, but ONLY where
+ *  they sit outside quoted strings and parenthesized groups. A declaration
+ *  like `width`, `/*`…`*`+`/`, `:1920px !important` reads, to the browser,
+ *  exactly `width:1920px !important`, so the sizing match must see the same
+ *  text the browser tokenizes, while comment spans inside url(…) or string
+ *  content stay verbatim.
+ */
+function stripCssComments(value: string): string {
+  let out = '';
+  let quote: '"' | "'" | null = null;
+  let depth = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    const next = value[i + 1];
+    if (quote !== null) {
+      out += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+    } else if (ch === '(') {
+      depth++;
+      out += ch;
+    } else if (ch === ')') {
+      depth = Math.max(depth - 1, 0);
+      out += ch;
+    } else if (ch === '/' && next === '*' && depth === 0) {
+      const end = value.indexOf('*/', i + 2);
+      // Unterminated comment: the browser swallows the rest of the value.
+      i = end === -1 ? value.length : end + 1;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /** Split a style value into declarations at semicolons that sit OUTSIDE
- *  quoted strings and parenthesized groups (url(…), rgb(…)), so width-like
- *  fragments embedded in quoted URLs never corrupt unrelated declarations.
- *  Quote characters inside a parenthesized group are ordinary data (an
- *  unbalanced apostrophe in `url(don't.png)` must not shield the rest of the
- *  value), and if a quote is still open at the end of the value the split
- *  falls back to quote-blind so a hostile declaration can never hide behind
- *  an unclosed string. */
+ *  quoted strings, `/*`…`*`+`/` comments and parenthesized groups (url(…),
+ *  rgb(…)), so width-like fragments embedded in quoted URLs never corrupt
+ *  unrelated declarations and a semicolon hiding inside a comment never cuts
+ *  a declaration short. Quote characters inside a parenthesized group are
+ *  ordinary data (an unbalanced apostrophe in `url(don't.png)` must not
+ *  shield the rest of the value), and if a quote is still open at the end of
+ *  the value the split falls back to quote-blind so a hostile declaration
+ *  can never hide behind an unclosed string. */
 function splitDeclarations(value: string): string[] {
   const decls: string[] = [];
   let cur = '';
   let quote: string | null = null;
   let depth = 0;
-  for (const ch of value) {
+  let i = 0;
+  while (i < value.length) {
+    const ch = value[i];
+    const next = value[i + 1];
     if (depth > 0) {
       if (ch === '(') depth++;
       else if (ch === ')') depth--;
-    } else if (quote !== null) {
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (quote !== null) {
+      cur += ch;
       if (ch === quote) quote = null;
-    } else if (ch === '"' || ch === "'") {
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       quote = ch;
-    } else if (ch === '(') {
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
       depth++;
-    } else if (ch === ';') {
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      // CSS comments are opaque: their content, semicolons included, is not
+      // declaration text (matches how the browser tokenizes the value), but
+      // it stays verbatim in the declaration for the sizing match to see
+      // comment-camouflaged properties.
+      const end = value.indexOf('*/', i + 2);
+      if (end === -1) {
+        cur += value.slice(i);
+        i = value.length;
+      } else {
+        cur += value.slice(i, end + 2);
+        i = end + 2;
+      }
+      continue;
+    }
+    if (ch === ';') {
       decls.push(cur);
       cur = '';
+      i++;
       continue;
     }
     cur += ch;
+    i++;
   }
   if (cur.trim() !== '') decls.push(cur);
   if (quote !== null) return value.split(';');
@@ -108,10 +187,19 @@ export function neutralizeImgInlineSizing(html: string): string {
     let m: RegExpExecArray | null;
     while ((m = ATTR_RE.exec(attrs)) !== null) {
       const value = m[4] ?? m[5] ?? '';
-      if (!/^style$/i.test(m[2]) || (m[4] === undefined && m[5] === undefined)) continue;
+      // ATTR_RE only ever matches quoted attribute values, so one of m[4]/m[5]
+      // is always defined here; only the attribute name can disqualify a match.
+      if (!/^style$/i.test(m[2])) continue;
       const quote = m[4] === undefined ? "'" : '"';
+      // Sizing declarations are detected on the comment-stripped text (the
+      // browser drops comments at parse time too), so `width/*x*/:1920px`
+      // cannot slip past; unrelated declarations keep their verbatim text.
       const kept = splitDeclarations(value)
-        .filter((d) => d.trim() !== '' && !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(d))
+        .filter(
+          (d) =>
+            d.trim() !== '' &&
+            !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(stripCssComments(d)),
+        )
         .join(';');
       if (kept === value) continue;
       changed = true;

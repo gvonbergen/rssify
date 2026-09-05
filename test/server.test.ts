@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createApp, injectArticleCss } from '../src/server.ts';
+import { createApp, injectArticleCss, neutralizeImgInlineSizing } from '../src/server.ts';
 import { addItemSection, insertItem } from '../src/db.ts';
 import { itemRow, makeTempDir, openTempDb, removeTempDir, seedItemFile, seedSite } from './helpers.ts';
 
@@ -128,6 +128,8 @@ test('cleaned and LLM article pages constrain oversized article images to the re
           // must not shield the following hostile declarations.
           + '<p><img src="https://cdn.test/apos.png" style="font-family:O\'Reilly;width:1920px !important;aspect-ratio:3/2"></p>'
           + '<p><img src="https://cdn.test/urlapos.png" style="background:url(don\'t.png);width:1920px !important"></p>'
+          + '<p><img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented"></p>'
+          + '<p><img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -153,6 +155,8 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         // by hostile sizing declarations.
         + '<img src=\'https://cdn.test/dq.png\' style=\'font-family:O"Reilly;width:900px !important;height:5px\'>'
         + '<img src=\'https://cdn.test/squrl.png\' style=\'background:url(don"t.png);min-width:600px !important\'>'
+        + '<img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented">'
+        + '<img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min">'
         + '</article></body></html>',
       'utf8',
     );
@@ -187,6 +191,12 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/apos\.png" style="font-family:O'Reilly;aspect-ratio:3\/2">/);
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/urlapos\.png" style="background:url\(don't\.png\)">/);
     assert.doesNotMatch(llmHtml, /width:900px|width:5px/);
+    // CSS comments spliced into sizing properties must not let the sizing
+    // declaration slip past (browsers tokenize the comment away): both the
+    // plain and min-width variants are removed, unrelated borders kept.
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented\.png" style="border:2px dotted red" alt="commented">/);
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented-min\.png" style="aspect-ratio:16\/9" alt="commented-min">/);
+    assert.doesNotMatch(llmHtml, /1200px|700px/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
@@ -205,7 +215,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // single-quoted attribute form where the unbalanced quote is a raw `"`.
     assert.match(cleanedHtml, /<img src='https:\/\/cdn\.test\/dq\.png' style='font-family:O"Reilly'>/);
     assert.match(cleanedHtml, /<img src='https:\/\/cdn\.test\/squrl\.png' style='background:url\(don"t\.png\)'>/);
-    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px/);
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/commented\.png" style="border:2px dotted red" alt="commented">/);
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/commented-min\.png" style="aspect-ratio:16\/9" alt="commented-min">/);
+    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw|width:900px|width:5px|1200px|700px/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
     // nor the app chrome index pages carry the image style.
@@ -268,4 +280,42 @@ test('HTTP item route honors per-site ignore_images setting', async () => {
     db.close();
     await removeTempDir(dir);
   }
+});
+
+test('neutralizeImgInlineSizing strips comment-camouflaged sizing declarations only', () => {
+  // A CSS comment spliced into a sizing property masks it from a naive
+  // property-name match, but the browser tokenizes `width/*x*/:1920px` as
+  // `width:1920px` — so the declaration must be detected on comment-stripped
+  // text and removed, keeping unrelated declarations verbatim.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" alt="x" style="width/*x*/:1920px !important;border:1px solid">'),
+    '<img src="a.png" alt="x" style="border:1px solid">',
+  );
+  // Comments spliced into composite properties are handled the same way.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="min-/*x*/width:700px;aspect-ratio:16/9">'),
+    '<img src="a.png" style="aspect-ratio:16/9">',
+  );
+  // An unterminated comment swallows the rest of the declaration, mirroring
+  // the browser's tokenizer.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="width:800px/*x">'),
+    '<img src="a.png">',
+  );
+  // Comments are only stripped for matching: unrelated declarations keep
+  // their exact text, comments included.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="color:red/*keep me*/;width:10px">'),
+    '<img src="a.png" style="color:red/*keep me*/">',
+  );
+  // A comment inside a quoted string is string content, not a comment.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style=\'font-family:"A/*x*/B";width:9px\'>'),
+    '<img src="a.png" style=\'font-family:"A/*x*/B"\'>',
+  );
+  // A comment inside a parenthesized group is preserved too.
+  assert.equal(
+    neutralizeImgInlineSizing('<img src="a.png" style="background:url(/*x*/img.png);width:8px">'),
+    '<img src="a.png" style="background:url(/*x*/img.png)">',
+  );
 });
