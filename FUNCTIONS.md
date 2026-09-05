@@ -95,7 +95,7 @@ Server built by `createApp(db, config, opts)` (`src/server.ts`), bound by `rssif
 | `GET /<site>` or `/<site>.xml` | Merged RSS 2.0 feed for the site |
 | `GET /<site>/<section>` or `/<site>/<section>.xml` | Section-scoped RSS feed |
 | `GET /<site>/status` | JSON: site + per-section item counts, last scrape |
-| `GET /<site>/item/<hash>` or `/<hash>.html` | Cleaned article HTML (read from `content_path`); stripped of images when `ignore_images` |
+| `GET /<site>/item/<hash>` or `/<hash>.html` | Cleaned article HTML (read from `content_path`), serve-time reader constraint injected (`injectArticleCss`: image-fit CSS + viewport meta + inline img sizing neutralized); stripped of images instead when `ignore_images` |
 | `GET /<site>/item/<hash>/llm` | LLM-extracted article rendered as HTML (from `data/<site>/<hash>.llm.json`); 404 with hint when no sidecar stored |
 | any other | 404 |
 
@@ -451,6 +451,9 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Export | Signature | Notes |
 |---|---|---|
 | `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
+| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`) used by the LLM page template |
+| `neutralizeImgInlineSizing` | `(html) → string` | Strips sizing declarations — `width`/`height` and the logical `inline-size`/`block-size`, each with `min-`/`max-` variants — from `<img>` inline `style` attributes (quote- and paren-aware, `!important` or not), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
+| `injectArticleCss` | `(doc) → string` | Serve-time reader constraint for stored cleaned docs (fixes existing articles without re-scrape): neutralizes inline img sizing, injects viewport meta + unqualified `img` CSS into `<head>` (falls back to after `<body>` or doc start for fragment-shaped docs) |
 
 Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at

@@ -22,6 +22,257 @@ export const DEFAULT_WEBSITE_ITEM_LIMIT = 10;
 export const MAX_WEBSITE_ITEM_LIMIT = 1000;
 const MAX_WEBSITE_OFFSET = 1_000_000_000;
 
+/**
+ * Reader-side constraint for article-body images, shared by both rendered
+ * article views (`cleaned` and `llm`). Images fit the article column, stay
+ * responsive at desktop and mobile widths, preserve their aspect ratio, and
+ * can never create horizontal overflow. Scoped to <article> so app chrome,
+ * index pages and RSS XML (readers apply their own CSS) are untouched.
+ * `!important` guarantees the source's width/height attributes and inline
+ * styles cannot override the reader constraint; hostile inline sizing
+ * declarations (including `!important` ones, which outrank any author
+ * stylesheet) are stripped at the same boundary by `neutralizeImgInlineSizing`.
+ */
+export const ARTICLE_IMAGE_CSS = `article img {
+  max-width: 100% !important;
+  height: auto !important;
+}`;
+
+/**
+ * Same reader constraint, injected into stored cleaned-article documents at
+ * serve time. Cleaned documents carry no <article> wrapper — readability
+ * keeps `<div id="readability-page-1">` — so the selector covers every image
+ * in the document (the whole page IS the article). See `injectArticleCss`.
+ */
+const CLEANED_IMAGE_CSS = `img {
+  max-width: 100% !important;
+  height: auto !important;
+}`;
+
+/**
+ * Strip sizing declarations (`width`, `min-/max-width`, `height`,
+ * `min-/max-height`) from inline `style` attributes of `<img>` elements,
+ * keeping every unrelated declaration verbatim. Inline `!important`
+ * declarations outrank any author stylesheet, and `min-width` clamps
+ * `max-width`, so no CSS rule could fully enforce the reader constraint
+ * against a hostile source image — removal is the only reliable neutralizer.
+ * Declarations are matched on comment-stripped, escape-decoded text (outside
+ * quoted strings and parens), so neither a comment spliced into a sizing
+ * property (e.g. `width:`, a CSS comment, then `1920px !important`) nor an
+ * escape-encoded property name (`w\69 dth`) can hide the declaration from
+ * the browser — which tokenizes it back to `width:1920px !important` — while
+ * unrelated declarations keep their verbatim text. Source `width`/`height`
+ * *attributes* need no handling here: they lose to the `!important`
+ * stylesheet rules on their own.
+ */
+const IMG_TAG_RE = /<img\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
+const ATTR_RE = /(\s)([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
+
+/** Strip CSS comments (a `/*` … `*` + `/` span) from a string, but ONLY where
+ *  they sit outside quoted strings and parenthesized groups. A declaration
+ *  like `width`, `/*`…`*`+`/`, `:1920px !important` reads, to the browser,
+ *  exactly `width:1920px !important`, so the sizing match must see the same
+ *  text the browser tokenizes, while comment spans inside url(…) or string
+ *  content stay verbatim.
+ */
+function stripCssComments(value: string): string {
+  let out = '';
+  let quote: '"' | "'" | null = null;
+  let depth = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    const next = value[i + 1];
+    if (quote !== null) {
+      out += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+    } else if (ch === '(') {
+      depth++;
+      out += ch;
+    } else if (ch === ')') {
+      depth = Math.max(depth - 1, 0);
+      out += ch;
+    } else if (ch === '/' && next === '*' && depth === 0) {
+      const end = value.indexOf('*/', i + 2);
+      // Unterminated comment: the browser swallows the rest of the value.
+      i = end === -1 ? value.length : end + 1;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/** Decode CSS escape sequences exactly as the browser's tokenizer does (a
+ *  backslash + 1–6 hex digits + optional single whitespace, or a backslash
+ *  before any other character), so escape-camouflaged property names such as
+ *  `w\69 dth` or `\77idth` are matched as the properties they become. Used
+ *  for matching only — kept declarations are re-emitted verbatim. */
+function decodeCssEscapes(text: string): string {
+  return text.replace(
+    /\\([0-9a-fA-F]{1,6})(\r\n|[ \t\r\n\f])?|\\(.)/g,
+    (_m, hex: string | undefined, _ws, lit: string | undefined) => {
+      if (hex === undefined) return lit ?? '';
+      const code = parseInt(hex, 16);
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+        ? String.fromCodePoint(code)
+        : '\uFFFD';
+    },
+  );
+}
+
+/** Split a style value into declarations at semicolons that sit OUTSIDE
+ *  quoted strings, `/*`…`*`+`/` comments and parenthesized groups (url(…),
+ *  rgb(…)), so width-like fragments embedded in quoted URLs never corrupt
+ *  unrelated declarations and a semicolon hiding inside a comment never cuts
+ *  a declaration short. Quote characters inside a parenthesized group are
+ *  ordinary data (an unbalanced apostrophe in `url(don't.png)` must not
+ *  shield the rest of the value), and if a quote is still open at the end of
+ *  the value the split falls back to quote-blind so a hostile declaration
+ *  can never hide behind an unclosed string. */
+function splitDeclarations(value: string): string[] {
+  const decls: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  let depth = 0;
+  let i = 0;
+  while (i < value.length) {
+    const ch = value[i];
+    const next = value[i + 1];
+    if (depth > 0) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (quote !== null) {
+      cur += ch;
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      // CSS comments are opaque: their content, semicolons included, is not
+      // declaration text (matches how the browser tokenizes the value), but
+      // it stays verbatim in the declaration for the sizing match to see
+      // comment-camouflaged properties.
+      const end = value.indexOf('*/', i + 2);
+      if (end === -1) {
+        cur += value.slice(i);
+        i = value.length;
+      } else {
+        cur += value.slice(i, end + 2);
+        i = end + 2;
+      }
+      continue;
+    }
+    if (ch === ';') {
+      decls.push(cur);
+      cur = '';
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  if (cur.trim() !== '') decls.push(cur);
+  if (quote !== null) return value.split(';');
+  return decls;
+}
+
+const SIZING_PROP_RE = /^(?:min-|max-)?(?:width|height|inline-size|block-size)$/;
+
+/** True when a declaration sets one of the sizing properties. The property
+ *  is read on comment-stripped, escape-decoded text — what the browser
+ *  actually tokenizes — as the segment before the first colon; an escaped
+ *  colon (`\3A`) makes the property unknown (the browser drops the whole
+ *  declaration) and never a sizing one. The logical properties `inline-size`
+ *  and `block-size` map to width/height in horizontal writing modes, so they
+ *  are stripped symmetrically with their min-/max- variants. */
+function isSizingDeclaration(decl: string): boolean {
+  const text = stripCssComments(decl);
+  const colon = text.indexOf(':');
+  if (colon === -1) return false;
+  return SIZING_PROP_RE.test(decodeCssEscapes(text.slice(0, colon)).trim().toLowerCase());
+}
+
+export function neutralizeImgInlineSizing(html: string): string {
+  return html.replace(IMG_TAG_RE, (tag: string) => {
+    const openEnd = /^<img\b/i.exec(tag)![0].length;
+    const attrs = tag.slice(openEnd, -1);
+    let out = '';
+    let pos = 0;
+    let changed = false;
+    ATTR_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ATTR_RE.exec(attrs)) !== null) {
+      const value = m[4] ?? m[5] ?? '';
+      // ATTR_RE only ever matches quoted attribute values, so one of m[4]/m[5]
+      // is always defined here; only the attribute name can disqualify a match.
+      if (!/^style$/i.test(m[2])) continue;
+      const quote = m[4] === undefined ? "'" : '"';
+      // Sizing declarations are detected on the normalized match text
+      // (comment-stripped, escape-decoded — what the browser tokenizes), so
+      // camouflaged properties cannot slip past; unrelated declarations
+      // keep their verbatim text.
+      const kept = splitDeclarations(value)
+        .filter((d) => d.trim() !== '' && !isSizingDeclaration(d))
+        .join(';');
+      if (kept === value) continue;
+      changed = true;
+      const replacement =
+        kept.trim() === ''
+          ? ''
+          : `${m[1]}${m[2]}${m[3]}${quote}${kept.replaceAll(quote, quote === '"' ? '&quot;' : '&#39;')}${quote}`;
+      out += attrs.slice(pos, m.index) + replacement;
+      pos = m.index + m[0].length;
+    }
+    return changed ? tag.slice(0, openEnd) + out + attrs.slice(pos) + '>' : tag;
+  });
+}
+
+/**
+ * Inject the article-page image constraint into a stored cleaned-article
+ * document at serve time (created per request, so existing stored articles
+ * get the fix without a re-scrape). The clean pipeline stores full-document
+ * serializations (`<html><head>…<body>…`), so the style is inserted into
+ * <head>; fragment-shaped stored content falls back to just after <body> or
+ * the document start — browsers apply a <style> element in any position.
+ */
+export function injectArticleCss(doc: string): string {
+  doc = neutralizeImgInlineSizing(doc);
+  const viewportMeta = /<meta[^>]+name=["']viewport["']/i.test(doc)
+    ? ''
+    : '<meta name="viewport" content="width=device-width, initial-scale=1">\n';
+  const style = `<style>${CLEANED_IMAGE_CSS}\n</style>`;
+  const head = /<head(?:\s[^>]*)?>/i.exec(doc);
+  if (head) {
+    return (
+      doc.slice(0, head.index + head[0].length) + viewportMeta + style + doc.slice(head.index + head[0].length)
+    );
+  }
+  const body = /<body[^>]*>/i.exec(doc);
+  if (body) {
+    return doc.slice(0, body.index + body[0].length) + style + doc.slice(body.index + body[0].length);
+  }
+  return style + doc;
+}
+
 function positiveInteger(value: unknown): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
@@ -425,17 +676,19 @@ ${moreLink}
     const dateTs = llm.publishedAt ? Date.parse(llm.publishedAt) : NaN;
     const dateStr = Number.isFinite(dateTs) ? fmt(dateTs) : fmt(it.published_at ?? it.first_seen);
     const body = llm.html
-      ? sanitizeArticleHtml(llm.html)
+      ? neutralizeImgInlineSizing(sanitizeArticleHtml(llm.html))
       : textToHtml(llm.text ?? '');
     return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — LLM extraction</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; max-width: 50rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
   h1 { font-size: 1.6rem; line-height: 1.25; }
   .meta { color: #777; font-size: .85rem; margin-bottom: 1.5rem; word-break: break-all; }
   article p { line-height: 1.6; margin: 0 0 1rem; }
+  ${ARTICLE_IMAGE_CSS}
   .muted { color: #777; font-size: .85rem; }
   .muted a { color: #555; }
 </style>
@@ -512,7 +765,8 @@ ${moreLink}
         if (!it) return c.text('not found', 404);
         const html = readContent(it.content_path);
         if (html === null) return c.text('content missing', 404);
-        return c.html(ignoreImagesFor(site) ? stripImages(html) : html);
+        // Text-only mode (ignore_images) has no images left to constrain.
+        return c.html(ignoreImagesFor(site) ? stripImages(html) : injectArticleCss(html));
       }
       return c.text('not found', 404);
     }
