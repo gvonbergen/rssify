@@ -60,7 +60,7 @@ const CLEANED_IMAGE_CSS = `img {
  * the `!important` stylesheet rules on their own.
  */
 export function neutralizeImgInlineSizing(html: string): string {
-  return html.replace(/<img\b[^>]*>/gi, (tag) =>
+  return html.replace(/<img\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) =>
     tag.replace(
       /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i,
       (_attr: string, dq: string | undefined, sq: string | undefined) => {

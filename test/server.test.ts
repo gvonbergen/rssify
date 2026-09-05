@@ -120,6 +120,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         html: '<p><img src="https://images.cryptorank.io/articles/wide.png" fetchpriority="high" alt="artwork"></p>'
           + '<p><img src="https://cdn.test/inline.png" width="1920" height="1118" style="width:1920px;height:1118px;max-width:none"></p>'
           + '<p><img src="https://cdn.test/hostile.png" style=\'width:1920px !important;min-width:900px;aspect-ratio:16/9;border:2px solid #333\' alt="hostile"></p>'
+          + '<p><img alt="a>b" class="art" src="https://cdn.test/gt.png" style="min-width:800px;height:500px !important;aspect-ratio:4/3"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -137,6 +138,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
       contentPath,
       '<html><head></head><body><article><p>Cleaned body</p>'
         + '<img src="https://cdn.test/hostile.png" style="width:1920px !important;min-width:900px;aspect-ratio:16/9" alt="hostile">'
+        + '<img src="https://cdn.test/query.png?a>b" style="width:100vw !important;border:0">'
         + '</article></body></html>',
       'utf8',
     );
@@ -156,6 +158,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/inline\.png" width="1920" height="1118">/);
     assert.doesNotMatch(llmHtml, /width:1920px|min-width|max-width:none/);
     assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9;border:2px solid #333" alt="hostile">/);
+    // A raw '>' inside a quoted attribute value must not shield the style
+    // attribute from the neutralizer.
+    assert.match(llmHtml, /<img alt="a>b" class="art" src="https:\/\/cdn\.test\/gt\.png" style="aspect-ratio:4\/3">/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
@@ -167,7 +172,8 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     assert.match(cleanedHtml, /<head><meta name="viewport" content="width=device-width, initial-scale=1">\n<style>img \{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}\s*<\/style>/);
     assert.match(cleanedHtml, /<article><p>Cleaned body<\/p>/);
     assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9" alt="hostile">/);
-    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width/);
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/query\.png\?a>b" style="border:0">/);
+    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width|100vw/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
     // nor the app chrome index pages carry the image style.
