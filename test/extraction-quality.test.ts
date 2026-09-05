@@ -223,16 +223,16 @@ test('summarizeParseResults excludes picture items, duplicates, and paywalls fro
   const summary = summarizeParseResults(
     [
       // A good text article.
-      { ok: true, inserted: 1, bodyGood: true, dateGood: true },
+      { ok: true, inserted: 1, bodyGood: true, dateGood: true, paywalled: false, picture: false },
       // A second good article with no parsed date.
-      { ok: true, inserted: 1, bodyGood: true, dateGood: false },
+      { ok: true, inserted: 1, bodyGood: true, dateGood: false, paywalled: false, picture: false },
       // A picture item: stored, but excluded from every quality tally.
-      { ok: true, inserted: 1, bodyGood: true, dateGood: true, picture: true },
+      { ok: true, inserted: 1, bodyGood: true, dateGood: true, paywalled: false, picture: true },
       // Duplicate re-parse and paywall skip: never scored.
-      { ok: true, inserted: 0, bodyGood: false, dateGood: false },
-      { ok: true, inserted: 0, bodyGood: false, dateGood: false, paywalled: true },
+      { ok: true, inserted: 0, bodyGood: false, dateGood: false, paywalled: false, picture: false },
+      { ok: true, inserted: 0, bodyGood: false, dateGood: false, paywalled: true, picture: false },
       // A hard failure: not scored either.
-      { ok: false, inserted: 0, bodyGood: false, dateGood: false },
+      { ok: false, inserted: 0, bodyGood: false, dateGood: false, paywalled: false, picture: false },
     ],
     quality,
   );

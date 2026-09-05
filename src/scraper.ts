@@ -388,7 +388,7 @@ export async function runSiteScrape(
             { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
             res.paywalled ? 'parse: paywall — skipped' : res.inserted ? 'parse: ok — new item' : 'parse: duplicate — skipped',
           );
-          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
+          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
         } catch (e) {
           // Bot-gate HTTP error (e.g. Cloudflare challenge returns 403): the
           // plain backend throws before any HTML reaches cleaning. If Firecrawl
@@ -421,7 +421,7 @@ export async function runSiteScrape(
                   { idx: i + 1, total, url: cand.url, inserted: res.inserted, ms: Date.now() - t0 },
                   res.inserted ? 'parse: firecrawl fallback ok — new item' : 'parse: firecrawl fallback ok — duplicate',
                 );
-                return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
+                return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
               }
             } catch (e2) {
               secLog.warn({ url: cand.url, err: String(e2) }, 'firecrawl fallback failed');
@@ -432,7 +432,7 @@ export async function runSiteScrape(
             'parse failed',
           );
           errors.push(`parse ${cand.url}: ${String(e)}`);
-          return { cand: cand.url, ok: false, inserted: 0, bodyGood: false, dateGood: false } as const;
+          return { cand: cand.url, ok: false, inserted: 0, bodyGood: false, dateGood: false, paywalled: false, picture: false } as const;
         }
       });
       // Sum inserted counts + extraction-quality stats after all workers finish.
@@ -873,9 +873,9 @@ export interface ParseOutcome {
   inserted: number;
   bodyGood: boolean;
   dateGood: boolean;
-  paywalled?: boolean;
+  paywalled: boolean;
   /** Picture item: stored normally, but excluded from the quality rates. */
-  picture?: boolean;
+  picture: boolean;
 }
 
 /**
