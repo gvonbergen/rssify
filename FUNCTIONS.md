@@ -331,7 +331,7 @@ the site's `extract.llm` isn't `false`.
 | `looksBotGated` | `(html) → boolean` | True when HTML carries a bot-protection marker (`BOT_GATE_MARKERS`: Cloudflare `cf-chl`/`challenge-platform`/etc., DataDome `captcha-delivery`/`datadome`). Only consulted when cleaning fails |
 | `looksLikePictureItem` | `(content, text) → boolean` | Picture-item gate: ≥1 `<img>` AND text < 500 chars AND paragraphs ≥80 chars / total < 0.7 |
 | `summarizeParseResults` | `(results, quality) → { newItems; paywalled; pictures }` | Aggregates per-candidate `ParseOutcome`s into the quality tallies; duplicates, paywalls and picture items never count |
-| `ParseOutcome` | interface | `{ ok; inserted; bodyGood; dateGood; paywalled?; picture? }` |
+| `ParseOutcome` | interface | `{ ok; inserted; bodyGood; dateGood; paywalled; picture }` |
 | `runSiteScrape` | `(db, config, site, section?) → Promise<ScrapeResult \| null>` | One full scrape run; serialized per site via `inflight` |
 | `persistArticle` | see below | Exported as a backend-injected test seam; identical to the internal call path |
 
