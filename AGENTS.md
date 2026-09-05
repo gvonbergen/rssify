@@ -34,6 +34,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `<article>`, so the `<article>`-scoped image rule applies to both views
   without touching stored data.
 
+## Article dates
+
+- The RSS feed and the HTML overview (main index and `/feed/<site>/articles`)
+  must derive every article's date from ONE database-backed value:
+  `published_at ?? first_seen` (ordering in `recentItems`, rendering in
+  `articleItemHtml`/`siteFeedHtml`, all in `src/server.ts`). `feedSource`
+  `'llm'` sidecars override title/link/content in the feed but NOT the date —
+  a hallucinated sidecar `publishedAt` would drift the feed's dates/order
+  away from the overview (future dates bubble to the top of readers). The
+  sidecar `publishedAt` is only displayed on the single-article `/llm` page
+  and is never persisted into `published_at` (not even by `rssify reprocess`, src/cli.ts).
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

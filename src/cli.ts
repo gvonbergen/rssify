@@ -719,10 +719,6 @@ program
                 if (feedSource === 'llm') {
                   // LLM fields win over tag fields when the feed reads LLM.
                   if (llm.title) updates.title = llm.title;
-                  if (llm.publishedAt) {
-                    const t = Date.parse(llm.publishedAt);
-                    if (Number.isFinite(t)) updates.published_at = t;
-                  }
                 }
               } else {
                 console.log(`llm extract: nothing usable ${row.url}`);

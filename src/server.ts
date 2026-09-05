@@ -422,8 +422,13 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
       .map((it) => {
         const content = readContent(it.content_path);
         // Tag-based fields are the default; when the site's feedSource is
-        // 'llm' the stored LLM sidecar overrides title/link/date/content
-        // (falling back to tag fields where the sidecar has nothing).
+        // 'llm' the stored LLM sidecar overrides title/link/content (falling
+        // back to tag fields where the sidecar has nothing). The date is
+        // deliberately NOT overridden: the feed and the HTML overview share
+        // one database-backed date (published_at ?? first_seen), so a
+        // hallucinated sidecar publishedAt can never diverge the surfaces or
+        // drift a feed's sort order (the item list is ordered by that same
+        // value in recentItems).
         let title: string = it.title;
         let link: string = it.url;
         let pubDate: number = it.published_at ?? it.first_seen;
@@ -434,10 +439,6 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
           if (llm) {
             if (llm.title) title = llm.title;
             if (llm.url) link = llm.url;
-            if (llm.publishedAt) {
-              const t = Date.parse(llm.publishedAt);
-              if (Number.isFinite(t)) pubDate = t;
-            }
             // Verbatim HTML body (sanitized again at serve time); older
             // sidecars carry plain text → convert defensively. Respect the
             // site's ignore_images setting like the tag path does.
