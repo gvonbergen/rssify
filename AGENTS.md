@@ -9,9 +9,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Both rendered article views — `/site/item/<hash>` (cleaned) and
   `/site/item/<hash>/llm` — must keep article images inside the reading
-  column. The shared rules live in `src/server.ts`: `ARTICLE_IMAGE_CSS`
-  (the `<article>`-scoped rule used by the LLM page template) and
-  `injectArticleCss()` (serve-time injection into stored cleaned docs). Any
+  column. The shared defenses live in `src/server.ts`: `ARTICLE_IMAGE_CSS`
+  (the `<article>`-scoped rule used by the LLM page template),
+  `injectArticleCss()` (serve-time injection into stored cleaned docs), and
+  `neutralizeImgInlineSizing()` (strips hostile inline img
+  width/height/min/max declarations — inline `!important` sizing would
+  otherwise outrank the reader CSS, and `min-width` clamps `max-width`). Any
   new article-adjacent HTML page should reuse them; never let a stored
   `<img>` render at natural size (source artwork is typically 1200–2000px wide).
 - Stored cleaned content is cheerio-serialized as a FULL document
