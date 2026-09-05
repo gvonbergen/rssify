@@ -102,8 +102,10 @@ Server built by `createApp(db, config, opts)` (`src/server.ts`), bound by `rssif
 Feed item model: `<description>` = full article body text, `<content:encoded>` = full cleaned
 HTML, `<guid isPermaLink="false">` = content hash, `<dc:creator>` = author when present.
 When the site's feed source is `llm` (see [§4 `extract.feedSource`](#4-site-config_json-knobs)),
-`<title>`/`<link>`/`<pubDate>`/`<content:encoded>` come from the stored LLM sidecar
-(falling back to tag fields when absent).
+`<title>`/`<link>`/`<content:encoded>` come from the stored LLM sidecar
+(falling back to tag fields when absent). `<pubDate>` is **not** overridden —
+the feed and the HTML overview share one database-backed date
+(`published_at ?? first_seen`).
 
 ---
 
@@ -139,7 +141,7 @@ editing by hand (the CLI commands below update the DB; `remove` deletes the file
 | `paywall_markers` | **string[]** | `[]` | Case-insensitive phrases in the **cleaned text**; if any matches, the article is **not stored** (counted as paywall skip). |
 | `storeRaw` | boolean | `defaults.store_raw` | Save `data/<site>/<hash>.raw.html` next to cleaned content |
 | `llm` | boolean | `defaults.llm_extract` | Enable/disable the LLM extraction path for this site (`false` opts out; only effective when an AI key is configured) |
-| `feedSource` | `'tags' \| 'llm'` | `defaults.feed_source` | Which extraction feeds the RSS items for this site — `'llm'` uses the stored sidecar's title/html/link/date (fallback to tag fields when no sidecar). **This instance defaults to `'llm'`** |
+| `feedSource` | `'tags' \| 'llm'` | `defaults.feed_source` | Which extraction feeds the RSS items for this site — `'llm'` uses the stored sidecar's title/html/link (fallback to tag fields when no sidecar); the date is never taken from the sidecar — both surfaces share `published_at ?? first_seen`. **This instance defaults to `'llm'`** |
 
 Example (see `sites/electronicpaymentsinternational.config.json`):
 

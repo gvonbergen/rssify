@@ -203,8 +203,10 @@ paths run in parallel so you can compare which performs better, then keep one.
   stored).
 * Feeds serve the LLM fields by default (`defaults.feed_source: llm` — set in
   `config.yaml`; per-site `extract.feedSource: "tags"` reverts a site) —
-  `<title>/<link>/<pubDate>/<content:encoded>` come from the LLM sidecar, falling
-  back to tag fields when no sidecar is stored.
+  `<title>/<link>/<content:encoded>` come from the LLM sidecar, falling back to
+  tag fields when no sidecar is stored. The date is **not** overridden by the
+  sidecar's `publishedAt`: every surface (feed and overview) shows the same
+  database-backed date (`published_at ?? first_seen`).
 * `rssify reprocess <site>` re-runs LLM extraction from saved raw HTML without
   re-scraping.
 * Output budget: `ai.extract_max_tokens` (default 32000); article body sent to the model is capped by `ai.max_input_chars` (default 40000).
