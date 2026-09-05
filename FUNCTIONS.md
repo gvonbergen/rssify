@@ -452,7 +452,7 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 |---|---|---|
 | `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
 | `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`) used by the LLM page template |
-| `neutralizeImgInlineSizing` | `(html) → string` | Strips `width`/`min-width`/`max-width`/`height`/`min-height`/`max-height` declarations from `<img>` inline `style` attributes (quote- and paren-aware, with or without `!important`), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
+| `neutralizeImgInlineSizing` | `(html) → string` | Strips sizing declarations — `width`/`height` and the logical `inline-size`/`block-size`, each with `min-`/`max-` variants — from `<img>` inline `style` attributes (quote- and paren-aware, `!important` or not), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
 | `injectArticleCss` | `(doc) → string` | Serve-time reader constraint for stored cleaned docs (fixes existing articles without re-scrape): neutralizes inline img sizing, injects viewport meta + unqualified `img` CSS into `<head>` (falls back to after `<body>` or doc start for fragment-shaped docs) |
 
 Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
