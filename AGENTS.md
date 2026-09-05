@@ -24,6 +24,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The breadcrumb site-name link on article views targets the HTML article
   history `/feed/<site>/articles` — never the RSS XML endpoint `/<site>`, which
   an RSS reader would open as a subscription.
+- On every article list surface (`/` and `/feed/<site>/articles`, one shared
+  `articleItemHtml` row in `src/server.ts`) the title link ALWAYS opens the
+  cleaned article view `/site/item/<hash>` — never `/llm`, never the external
+  `original` URL, never plain text. The LLM view stays reachable through the
+  row's sidecar-only `LLMextraction` slot; `original` keeps its `target=_blank`
+  external link. Don't regress the title to any other target.
 - Every internal article link percent-encodes its site segment through ONE
   rule (`siteItemHref` in `src/server.ts`) — the breadcrumb's feed-history and
   sibling cleaned/LLM links AND the article-row `cleaned`/title/LLM links on

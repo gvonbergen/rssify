@@ -144,7 +144,7 @@ controlled separately by `defaults.feed_item_limit`.
 | `rssify config show / config set <key> <value>` | Edit config; `*.api_key` values write to `.env` |
 
 To delete one article, copy its 40-character `<hash>` from the `cleaned` link
-(or the title's LLM view link, URL shape `/<site>/item/<hash>/llm`) on `/` or
+(or the `LLMextraction` link, URL shape `/<site>/item/<hash>/llm`) on `/` or
 `/feed/<site>/articles`, then run:
 
 ```sh
@@ -197,10 +197,11 @@ paths run in parallel so you can compare which performs better, then keep one.
   `defaults.llm_extract: false` or per-site `extract.llm: false`.
 * The result is cached per item at `data/<site>/<hash>.llm.json` and rendered on
   `/` and `/feed/<site>/articles`: each article row reads `Title · cleaned ·
-  original` — the **title** opens the LLM view (`/<site>/item/<hash>/llm`),
-  `cleaned` opens the stored cleaned article, and `original` returns to the
-  scraped source URL (the title falls back to the source URL when no sidecar is
-  stored).
+  LLMextraction · original` — the **title** always opens the cleaned article view
+  (`/<site>/item/<hash>`) on every list surface, `cleaned` opens the same stored
+  cleaned article, `LLMextraction` (only when a sidecar is stored) opens
+  `/<site>/item/<hash>/llm` as a secondary destination, and `original` returns to
+  the scraped source URL.
 * Feeds serve the LLM fields by default (`defaults.feed_source: llm` — set in
   `config.yaml`; per-site `extract.feedSource: "tags"` reverts a site) —
   `<title>/<link>/<content:encoded>` come from the LLM sidecar, falling back to

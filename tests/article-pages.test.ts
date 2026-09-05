@@ -129,7 +129,8 @@ test('article-row links percent-encode the site segment and round-trip on every 
     const app = createApp(db, config);
     // Every surface rendering articleItemHtml — the root overview and the
     // feed's article history — must carry the percent-encoded row links
-    // (cleaned + title/LLM), exactly like the breadcrumb links.
+    // (cleaned + title, plus the sidecar-only LLM slot), exactly like the
+    // breadcrumb links. The title always opens the cleaned view.
     const encodedClean = '/pct%2520name/item/hash-1';
     const encodedLlm = '/pct%2520name/item/hash-1/llm';
     for (const pagePath of ['/', `/feed/${encodeURIComponent(site)}/articles`]) {
@@ -137,7 +138,8 @@ test('article-row links percent-encode the site segment and round-trip on every 
       assert.equal(res.status, 200, pagePath);
       const html = await res.text();
       assert.match(html, new RegExp(`href="${encodedClean}">cleaned</a>`));
-      assert.match(html, new RegExp(`class="title" href="${encodedLlm}"`));
+      assert.match(html, new RegExp(`class="title" href="${encodedClean}"`));
+      assert.match(html, new RegExp(`class="llm" href="${encodedLlm}"`));
       // The raw (un-encoded) site segment must not appear in row hrefs — the
       // browser would re-decode the literal %20 and 404 on the route.
       assert.doesNotMatch(html, /href="\/pct%20name\/item\//);

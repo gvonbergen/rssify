@@ -466,9 +466,11 @@ segment so a literal `%` in a site name survives browser URL parsing and the
 route's `decodeURIComponent` — the single rule shared by the breadcrumb and
 every article-row link),
 `articleItemHtml` (shared article-list row for `/` and `/feed/<site>/articles`:
-`Title · cleaned · original` — title opens the LLM view, falling back to the
-external source URL and then the cleaned view; `original` opens the canonical
-external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
+`Title · cleaned · LLMextraction · original` — title ALWAYS opens the cleaned
+article view (`/<site>/item/<hash>`), never the LLM view, the external URL or
+plain text; the `LLMextraction` slot (only when a stored sidecar exists) opens
+`/<site>/item/<hash>/llm` as a secondary destination; `original` opens the
+canonical external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
 `siteStatus`, `stripExt`, `serveRss`, `rootPageHtml` (fixed concise overview;
 "Show more articles" links to the dedicated page),
 `feedArticlesPageHtml` (dedicated `/feed/<site>/articles` page: identifies the
