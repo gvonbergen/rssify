@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -290,6 +290,16 @@ async function runCli(args: string[]): Promise<{ status: number | null; stdout: 
 test('rssify reprocess never persists an LLM sidecar publishedAt into published_at', async () => {
   const dir = await makeTempDir();
   const llm = await startMockLlm(FUTURE_SIDECAR_DATE);
+  // The CLI loads ROOT/config.yaml and ROOT/.env at fixed paths, so the test
+  // temporarily points them at this isolated temp dir. Preserve whatever a
+  // developer has there and put it back afterwards.
+  const preserved = await Promise.all(
+    [CONFIG_PATH, ENV_PATH].map(async (p) => ({
+      path: p,
+      existed: existsSync(p),
+      original: existsSync(p) ? await readFile(p, 'utf8') : null,
+    })),
+  );
   try {
     // The CLI loads ROOT/config.yaml and ROOT/.env at fixed paths, so point
     // them at this isolated temp dir for the child process.
@@ -340,8 +350,12 @@ test('rssify reprocess never persists an LLM sidecar publishedAt into published_
     }
   } finally {
     await llm.close();
-    for (const p of [CONFIG_PATH, ENV_PATH]) {
-      if (existsSync(p)) rmSync(p, { force: true });
+    for (const p of preserved) {
+      if (p.existed) {
+        await writeFile(p.path, p.original ?? '', 'utf8');
+      } else if (existsSync(p.path)) {
+        await rm(p.path, { force: true });
+      }
     }
     await removeTempDir(dir);
   }
