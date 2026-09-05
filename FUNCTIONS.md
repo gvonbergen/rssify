@@ -456,8 +456,12 @@ Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at
 serve time), `feedSourceFor` (per-site `extract.feedSource` → else
 `defaults.feed_source`), `readLlmSidecar` (loads `data/<site>/<hash>.llm.json`),
-`siteFeedHtml`, `siteStatus`, `stripExt`, `serveRss`, `rootPageHtml` (fixed
-concise overview; "Show more articles" links to the dedicated page),
+`articleItemHtml` (shared article-list row for `/` and `/feed/<site>/articles`:
+`Title · cleaned · original` — title opens the LLM view, falling back to the
+external source URL and then the cleaned view; `original` opens the canonical
+external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
+`siteStatus`, `stripExt`, `serveRss`, `rootPageHtml` (fixed concise overview;
+"Show more articles" links to the dedicated page),
 `feedArticlesPageHtml` (dedicated `/feed/<site>/articles` page: identifies the
 feed, back link to the index, bounded progressive `limit`/`offset` paging),
 `llmPageHtml` (renders the stored LLM extraction as an HTML article page).

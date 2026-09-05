@@ -143,9 +143,9 @@ controlled separately by `defaults.feed_item_limit`.
 | `rssify logs <site> [--tail N]` | Recent scrape runs + log lines |
 | `rssify config show / config set <key> <value>` | Edit config; `*.api_key` values write to `.env` |
 
-To delete one article, copy its 40-character `<hash>` from the existing
-**cleaned** or **LLMextraction** link on `/` or `/feed/<site>/articles` (the URL
-shape is `/<site>/item/<hash>`), then run:
+To delete one article, copy its 40-character `<hash>` from the `cleaned` link
+(or the title's LLM view link, URL shape `/<site>/item/<hash>/llm`) on `/` or
+`/feed/<site>/articles`, then run:
 
 ```sh
 rssify delete-article <site> <hash>
@@ -195,8 +195,12 @@ paths run in parallel so you can compare which performs better, then keep one.
 
 * Enabled by default when an AI key is configured (`ai.api_key`); toggle with
   `defaults.llm_extract: false` or per-site `extract.llm: false`.
-* The result is cached per item at `data/<site>/<hash>.llm.json` and shown via the
-  **`LLMextraction`** link next to `cleaned` on the index page (`/<site>/item/<hash>/llm`).
+* The result is cached per item at `data/<site>/<hash>.llm.json` and rendered on
+  `/` and `/feed/<site>/articles`: each article row reads `Title · cleaned ·
+  original` — the **title** opens the LLM view (`/<site>/item/<hash>/llm`),
+  `cleaned` opens the stored cleaned article, and `original` returns to the
+  scraped source URL (the title falls back to the source URL when no sidecar is
+  stored).
 * Feeds serve the LLM fields by default (`defaults.feed_source: llm` — set in
   `config.yaml`; per-site `extract.feedSource: "tags"` reverts a site) —
   `<title>/<link>/<pubDate>/<content:encoded>` come from the LLM sidecar, falling
