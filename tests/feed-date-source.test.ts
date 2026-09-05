@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
+import YAML from 'yaml';
+import { CONFIG_PATH, ENV_PATH } from '../src/config.ts';
 import { createApp } from '../src/server.ts';
 import type { AppConfig } from '../src/config.ts';
 import { insertItem, type Db } from '../src/db.ts';
@@ -221,6 +226,123 @@ test('undated items (published_at NULL) sink to the bottom on feed and overviews
     assert.equal(page.find((i) => i.hash === 'undated')!.date, overviewDate(undated.first_seen));
   } finally {
     db.close();
+    await removeTempDir(dir);
+  }
+});
+
+/** OpenAI-compatible mock that always answers with the future sidecar date. */
+async function startMockLlm(publishedAt: string): Promise<{ port: number; close: () => Promise<void> }> {
+  const reply = {
+    id: 'chatcmpl-mock',
+    object: 'chat.completion',
+    created: 0,
+    model: 'reprocess-test',
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: JSON.stringify({
+            title: 'LLM Future Reprocess Title',
+            html: `<p>${'reproduced llm body '.repeat(30)}</p>`,
+            url: 'https://example.test/news/reprocess-future',
+            publishedAt,
+          }),
+        },
+        finish_reason: 'stop',
+      },
+    ],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  };
+  return new Promise((resolve, reject) => {
+    const svc = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(reply));
+    });
+    svc.on('error', reject);
+    svc.listen(0, '127.0.0.1', () => {
+      const addr = svc.address();
+      if (addr && typeof addr === 'object') {
+        resolve({
+          port: addr.port,
+          close: () => new Promise<void>((r) => svc.close(() => r())),
+        });
+      } else {
+        reject(new Error('mock LLM server did not bind'));
+      }
+    });
+  });
+}
+
+async function runCli(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ status: code, stdout, stderr }));
+  });
+}
+
+test('rssify reprocess never persists an LLM sidecar publishedAt into published_at', async () => {
+  const dir = await makeTempDir();
+  const llm = await startMockLlm(FUTURE_SIDECAR_DATE);
+  try {
+    // The CLI loads ROOT/config.yaml and ROOT/.env at fixed paths, so point
+    // them at this isolated temp dir for the child process.
+    await writeFile(
+      CONFIG_PATH,
+      YAML.stringify({
+        ai: {
+          base_url: `http://127.0.0.1:${llm.port}/v1`,
+          api_key: 'test-key',
+          model: 'reprocess-test',
+        },
+        storage: { data_dir: join(dir, 'data'), db_path: join(dir, 'state.sqlite') },
+      }),
+      'utf8',
+    );
+    const { db } = openTempDb(dir);
+    await setupLlmSite(dir, db);
+    const rawPath = join(dir, 'data', 'example', 'reprocess-future.raw.html');
+    await writeFile(
+      rawPath,
+      '<html><body><article><h1>A reprocessed headline</h1>' +
+        '<p>The article body that the tag path cleans.</p></article></body></html>',
+      'utf8',
+    );
+    const item = itemRow('example', 'reprocess-future', join(dir, 'reprocess-future.html'));
+    item.published_at = 1_700_000_000_000;
+    item.first_seen = 1_700_000_000_000;
+    item.raw_path = rawPath;
+    insertItem(db, item);
+    db.close();
+
+    const run = await runCli(['src/cli.ts', 'reprocess', 'example']);
+    assert.equal(run.status, 0, `${run.stderr} ${run.stdout}`);
+    assert.match(run.stdout, /reprocess-future/);
+
+    const reopened = openTempDb(dir);
+    try {
+      const row = reopened.db
+        .prepare('SELECT * FROM items WHERE site=? AND hash=?')
+        .get('example', 'reprocess-future') as { title: string; published_at: number | null };
+      // The LLM branch really ran for the 'llm' feedSource (title override)…
+      assert.equal(row.title, 'LLM Future Reprocess Title');
+      // …but the hallucinated future publishedAt never reached published_at.
+      assert.equal(row.published_at, item.published_at);
+      assert.notEqual(row.published_at, Date.parse(FUTURE_SIDECAR_DATE));
+    } finally {
+      reopened.db.close();
+    }
+  } finally {
+    await llm.close();
+    for (const p of [CONFIG_PATH, ENV_PATH]) {
+      if (existsSync(p)) rmSync(p, { force: true });
+    }
     await removeTempDir(dir);
   }
 });

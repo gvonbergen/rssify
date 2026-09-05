@@ -33,7 +33,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `'llm'` sidecars override title/link/content in the feed but NOT the date —
   a hallucinated sidecar `publishedAt` would drift the feed's dates/order
   away from the overview (future dates bubble to the top of readers). The
-  sidecar `publishedAt` is only displayed on the single-article `/llm` page.
+  sidecar `publishedAt` is only displayed on the single-article `/llm` page
+  and is never persisted into `published_at` (not even by `rssify reprocess`, src/cli.ts).
 
 ## Maintaining this file
 
