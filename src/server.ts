@@ -125,6 +125,32 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     }
   };
 
+  /** Shared article-list row: `Title · cleaned · original`.
+   *  - Title opens RSSify's LLM extraction view; without a stored LLM sidecar
+   *    it falls back to the canonical external URL (the pre-change title
+   *    target, mirroring the feed's llm→tags fallback), and if even that is
+   *    missing, to the cleaned view — the title link is never dead.
+   *  - `cleaned` keeps opening the stored cleaned article view.
+   *  - `original` (replacing the former `LLMextraction` slot) opens the
+   *    canonical external scraped-source URL (the LLM sidecar's canonical
+   *    pick wins, else the stored source URL — the same resolution the LLM
+   *    page and the feed use); omitted when no such URL exists. */
+  const articleItemHtml = (site: string, it: ItemRow, llm: LlmSidecar | null): string => {
+    const cleanHref = `/${site}/item/${it.hash}`;
+    const llmHref = `${cleanHref}/llm`;
+    const canonicalUrl = llm?.url || it.url || '';
+    const titleHref = llm ? llmHref : canonicalUrl || cleanHref;
+    const titleAttrs = !llm && canonicalUrl ? ' target="_blank" rel="noopener"' : '';
+    const original = canonicalUrl
+      ? `<span class="muted">· <a class="original" href="${esc(canonicalUrl)}" target="_blank" rel="noopener">original</a></span>`
+      : '';
+    return `<li class="item">
+      <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
+      <a class="title" href="${esc(titleHref)}"${titleAttrs}>${esc(it.title || '(untitled)')}</a>
+      <span class="muted">· <a class="cleaned" href="${esc(cleanHref)}">cleaned</a></span>${original}
+    </li>`;
+  };
+
   function siteFeedHtml(site: string, section: string | null, feedUrl: string): string {
     // opts.feedLimit overrides defaults.feed_item_limit; 0 = every stored
     // article (recentItems runs a LIMIT ?, so map to a huge cap).
@@ -275,13 +301,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
         })
         .join('');
       const itemRows = items
-        .map((it) => {
-          return `<li class="item">
-            <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
-            <a class="title" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title || '(untitled)')}</a>
-            <span class="muted">· <a href="/${esc(s.site)}/item/${esc(it.hash)}">cleaned</a> · <a href="/${esc(s.site)}/item/${esc(it.hash)}/llm">LLMextraction</a></span>
-          </li>`;
-        })
+        .map((it) => articleItemHtml(s.site, it, readLlmSidecar(s.site, it.hash)))
         .join('');
       let moreLink = '';
       if (hasMore) {
@@ -346,13 +366,7 @@ ${blocks}
     const siteTitle = s.title || site;
 
     const itemRows = items
-      .map((it) => {
-        return `<li class="item">
-          <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
-          <a class="title" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title || '(untitled)')}</a>
-          <span class="muted">· <a href="/${esc(site)}/item/${esc(it.hash)}">cleaned</a> · <a href="/${esc(site)}/item/${esc(it.hash)}/llm">LLMextraction</a></span>
-        </li>`;
-      })
+      .map((it) => articleItemHtml(site, it, readLlmSidecar(site, it.hash)))
       .join('');
 
     let rangeNote = '';
