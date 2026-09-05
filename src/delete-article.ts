@@ -78,7 +78,13 @@ export function deleteStoredArticle(
       staged.push({ original, tombstone });
     }
   } catch (error) {
-    restoreStaged(staged);
+    try {
+      restoreStaged(staged);
+    } catch (restoreError) {
+      throw new DeleteArticleError(
+        `could not stage article artifacts and rollback failed: ${message(error)}; ${message(restoreError)}`,
+      );
+    }
     throw new DeleteArticleError(`could not stage article artifacts: ${message(error)}`);
   }
 

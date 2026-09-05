@@ -164,6 +164,34 @@ test('deleteStoredArticle tolerates absent optional artifacts and refuses mismat
   }
 });
 
+test('deleteStoredArticle refuses cleanly when the site data dir is unusable (no partial deletion)', async () => {
+  const dir = await makeTempDir();
+  const { db, config } = openTempDb(dir);
+  try {
+    seedSite(db);
+    const dataDir = config.storage.data_dir;
+    await mkdir(dataDir, { recursive: true });
+    // Replace the site's data directory with a regular file so staging fails with ENOTDIR.
+    const sitePath = join(dataDir, 'example');
+    await writeFile(sitePath, 'not a directory');
+    insertItem(db, itemRow('example', TARGET_HASH, join(sitePath, `${TARGET_HASH}.html`)));
+    addItemSection(db, 'example', 'news', TARGET_HASH);
+
+    assert.throws(
+      () => deleteStoredArticle(db, config, 'example', TARGET_HASH),
+      (error: unknown) => error instanceof DeleteArticleError && /could not stage article artifacts/.test(error.message),
+    );
+    assert.ok(getItem(db, 'example', TARGET_HASH));
+    assert.ok(getSite(db, 'example'));
+    assert.ok(getSection(db, 'example', 'news'));
+    assert.equal(await readFile(sitePath, 'utf8'), 'not a directory');
+  } finally {
+    db.close();
+    await removeTempDir(dir);
+  }
+});
+
+
 test('CLI exposes unambiguous delete-article grammar and preserves legacy remove grammar', () => {
   const top = spawnSync(process.execPath, ['src/cli.ts', '--help'], { cwd: process.cwd(), encoding: 'utf8' });
   assert.equal(top.status, 0, top.stderr);
