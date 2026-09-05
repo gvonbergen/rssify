@@ -83,12 +83,31 @@ test('breadcrumb site-name link targets the HTML article history, never the RSS 
 
 test('breadcrumb site-name hrefs are URL-encoded for unsafe site names', async () => {
   await withPages({ site: 'glue & space' }, async ({ cleaned, llm }) => {
-    const expectedHref = '/feed/glue%20%26%20space/articles';
+    const feedHref = '/feed/glue%20%26%20space/articles';
+    const itemBase = '/glue%20%26%20space/item/hash-1';
     for (const html of [cleaned, llm!]) {
-      assert.match(html, new RegExp(`<a href="${expectedHref.replace(/[&]/g, '&amp;')}">← glue &amp; space</a>`));
-      // The route resolves back through the encoded href (the page rendered).
+      // The feed-history link carries the percent-encoded site segment (a
+      // literal `%` in a site name would otherwise be re-decoded by the
+      // browser and 404 on the route).
+      assert.match(html, new RegExp(`<a href="${feedHref}">← glue &amp; space</a>`));
       assert.doesNotMatch(html, /href="\/feed\/glue & space\/articles"/);
     }
+    // The sibling item links are encoded the same way — the LLM view's
+    // cleaned link and the cleaned view's LLMextraction link.
+    assert.match(llm!, new RegExp(`<a href="${itemBase}">cleaned</a>`));
+    assert.match(cleaned, new RegExp(`<a href="${itemBase}/llm">LLMextraction</a>`));
+    assert.doesNotMatch(cleaned, /href="\/glue & space\/item/);
+  });
+  // A site name containing a literal `%` + hex digits must not be re-decoded
+  // by the browser: every breadcrumb href round-trips through the routes.
+  await withPages({ site: 'pct%20name' }, async ({ cleaned, llm }) => {
+    const feedHref = '/feed/pct%2520name/articles';
+    const itemBase = '/pct%2520name/item/hash-1';
+    for (const html of [cleaned, llm!]) {
+      assert.match(html, new RegExp(`<a href="${feedHref}">← pct%20name</a>`));
+    }
+    assert.match(cleaned, new RegExp(`<a href="${itemBase}/llm">LLMextraction</a>`));
+    assert.match(llm!, new RegExp(`<a href="${itemBase}">cleaned</a>`));
   });
 });
 

@@ -682,10 +682,12 @@ ${moreLink}
    *  article history (`/feed/<site>/articles`, site name URL-encoded) — NOT
    *  to the RSS XML endpoint (`/<site>`), which an RSS reader would open as
    *  a subscription. Links are root-relative, so they work unchanged behind
-   *  a configured public/base URL. The current view is plain text; the other
+   *  a configured public/base URL. The site segment is percent-encoded in
+   *  every href (a literal `%` in a site name would otherwise be re-decoded
+   *  by the browser and 404). The current view is plain text; the other
    *  view is a link when reachable (the LLM view needs a stored sidecar). */
   const breadcrumbHtml = (site: string, it: ItemRow, view: 'cleaned' | 'llm', hasLlm: boolean): string => {
-    const itemBase = `/${esc(site)}/item/${esc(it.hash)}`;
+    const itemBase = `/${encodeURIComponent(site)}/item/${esc(it.hash)}`;
     const parts = [
       `<a href="/feed/${encodeURIComponent(site)}/articles">← ${esc(site)}</a>`,
       view === 'cleaned' ? 'cleaned' : `<a href="${itemBase}">cleaned</a>`,
