@@ -29,7 +29,9 @@ const MAX_WEBSITE_OFFSET = 1_000_000_000;
  * can never create horizontal overflow. Scoped to <article> so app chrome,
  * index pages and RSS XML (readers apply their own CSS) are untouched.
  * `!important` guarantees the source's width/height attributes and inline
- * styles cannot override the reader constraint.
+ * styles cannot override the reader constraint; hostile inline sizing
+ * declarations (including `!important` ones, which outrank any author
+ * stylesheet) are stripped at the same boundary by `neutralizeImgInlineSizing`.
  */
 export const ARTICLE_IMAGE_CSS = `article img {
   max-width: 100% !important;
@@ -48,6 +50,33 @@ const CLEANED_IMAGE_CSS = `img {
 }`;
 
 /**
+ * Strip sizing declarations (`width`, `min-/max-width`, `height`,
+ * `min-/max-height`) from inline `style` attributes of `<img>` elements,
+ * keeping every unrelated declaration verbatim. Inline `!important`
+ * declarations outrank any author stylesheet, and `min-width` clamps
+ * `max-width`, so no CSS rule could fully enforce the reader constraint
+ * against a hostile source image — removal is the only reliable neutralizer.
+ * Source `width`/`height` *attributes* need no handling here: they lose to
+ * the `!important` stylesheet rules on their own.
+ */
+export function neutralizeImgInlineSizing(html: string): string {
+  return html.replace(/<img\b[^>]*>/gi, (tag) =>
+    tag.replace(
+      /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i,
+      (_attr: string, dq: string | undefined, sq: string | undefined) => {
+        const quote = dq === undefined ? "'" : '"';
+        const kept = (dq ?? sq ?? '')
+          .split(';')
+          .filter((d) => d.trim() !== '' && !/^\s*(?:min-|max-)?(?:width|height)\s*:/i.test(d))
+          .join(';');
+        if (kept.trim() === '') return '';
+        return ` style=${quote}${kept.replaceAll(quote, quote === '"' ? '&quot;' : '&#39;')}${quote}`;
+      },
+    ),
+  );
+}
+
+/**
  * Inject the article-page image constraint into a stored cleaned-article
  * document at serve time (created per request, so existing stored articles
  * get the fix without a re-scrape). The clean pipeline stores full-document
@@ -56,11 +85,12 @@ const CLEANED_IMAGE_CSS = `img {
  * the document start — browsers apply a <style> element in any position.
  */
 export function injectArticleCss(doc: string): string {
+  doc = neutralizeImgInlineSizing(doc);
   const viewportMeta = /<meta[^>]+name=["']viewport["']/i.test(doc)
     ? ''
     : '<meta name="viewport" content="width=device-width, initial-scale=1">\n';
   const style = `<style>${CLEANED_IMAGE_CSS}\n</style>`;
-  const head = /<head[^>]*>/i.exec(doc);
+  const head = /<head(?:\s[^>]*)?>/i.exec(doc);
   if (head) {
     return (
       doc.slice(0, head.index + head[0].length) + viewportMeta + style + doc.slice(head.index + head[0].length)
@@ -476,7 +506,7 @@ ${moreLink}
     const dateTs = llm.publishedAt ? Date.parse(llm.publishedAt) : NaN;
     const dateStr = Number.isFinite(dateTs) ? fmt(dateTs) : fmt(it.published_at ?? it.first_seen);
     const body = llm.html
-      ? sanitizeArticleHtml(llm.html)
+      ? neutralizeImgInlineSizing(sanitizeArticleHtml(llm.html))
       : textToHtml(llm.text ?? '');
     return `<!doctype html>
 <html lang="en"><head>

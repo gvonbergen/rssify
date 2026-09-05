@@ -119,6 +119,7 @@ test('cleaned and LLM article pages constrain oversized article images to the re
         title: 'Wide image article',
         html: '<p><img src="https://images.cryptorank.io/articles/wide.png" fetchpriority="high" alt="artwork"></p>'
           + '<p><img src="https://cdn.test/inline.png" width="1920" height="1118" style="width:1920px;height:1118px;max-width:none"></p>'
+          + '<p><img src="https://cdn.test/hostile.png" style=\'width:1920px !important;min-width:900px;aspect-ratio:16/9;border:2px solid #333\' alt="hostile"></p>'
           + '<p>Article body text.</p>',
         url: 'https://example.test/news/a',
         publishedAt: null,
@@ -130,19 +131,31 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     const contentPath = join(dir, 'hash-1.html');
     // Store article content shaped like the clean pipeline's full-document
     // serialization (the real stored files begin with <html><head><body>).
-    await writeFile(contentPath, '<html><head></head><body><article><p>Cleaned body</p></article></body></html>', 'utf8');
+    // Includes a hostile inline !important width and an unrelated
+    // aspect-ratio declaration to exercise the serve-time neutralizer.
+    await writeFile(
+      contentPath,
+      '<html><head></head><body><article><p>Cleaned body</p>'
+        + '<img src="https://cdn.test/hostile.png" style="width:1920px !important;min-width:900px;aspect-ratio:16/9" alt="hostile">'
+        + '</article></body></html>',
+      'utf8',
+    );
     insertItem(db, itemRow('example', 'hash-1', contentPath));
 
     const app = createApp(db, config);
     const llm = await app.request('http://internal.test/example/item/hash-1/llm');
     assert.equal(llm.status, 200);
     const llmHtml = await llm.text();
-    // Both imgs render inside the article; source attributes and inline
-    // styles stay verbatim but can never exceed the column because the page
-    // carries the reader constraint with !important.
+    // Both imgs render inside the article; width/height attributes and
+    // unrelated inline declarations stay verbatim but hostile inline sizing
+    // declarations (which could outrank the reader constraint via !important
+    // or clamp max-width via min-width) are stripped at the serve boundary,
+    // so only the reader constraint controls image sizing.
     assert.match(llmHtml, /<article>/);
     assert.match(llmHtml, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/inline\.png" width="1920" height="1118" style="width:1920px;height:1118px;max-width:none">/);
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/inline\.png" width="1920" height="1118">/);
+    assert.doesNotMatch(llmHtml, /width:1920px|min-width|max-width:none/);
+    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9;border:2px solid #333" alt="hostile">/);
     assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
 
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
@@ -152,7 +165,9 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // (selector covers the doc's readability wrapper divs) plus a viewport
     // meta for mobile, with the article markup kept verbatim.
     assert.match(cleanedHtml, /<head><meta name="viewport" content="width=device-width, initial-scale=1">\n<style>img \{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}\s*<\/style>/);
-    assert.match(cleanedHtml, /<article><p>Cleaned body<\/p><\/article>/);
+    assert.match(cleanedHtml, /<article><p>Cleaned body<\/p>/);
+    assert.match(cleanedHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9" alt="hostile">/);
+    assert.doesNotMatch(cleanedHtml, /width:1920px|min-width/);
 
     // The constraint is scoped to rendered article pages: neither the RSS XML
     // nor the app chrome index pages carry the image style.
@@ -185,6 +200,14 @@ test('injectArticleCss places the reader constraint into any stored-content shap
   const bare = injectArticleCss('<p>Body</p>');
   assert.match(bare, style);
   assert.ok(bare.endsWith('<p>Body</p>'));
+  // <header> is never mistaken for <head>: a fragment-shaped doc starting
+  // with a header element gets the style prepended, not nested inside it.
+  const headerFrag = injectArticleCss('<header class="site"><p>Body</p></header>');
+  assert.ok(headerFrag.startsWith('<style>img {'));
+  assert.ok(headerFrag.endsWith('<header class="site"><p>Body</p></header>'));
+  // A head tag with attributes still matches.
+  const headAttrs = injectArticleCss('<html><head lang="en"></head><body></body></html>');
+  assert.match(headAttrs, /<head lang="en"><meta name="viewport"/);
 });
 
 test('HTTP item route honors per-site ignore_images setting', async () => {
