@@ -22,8 +22,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   extracts the verbatim `<body>` content for the shell. Never let a stored
   `<img>` render at natural size (source artwork is typically 1200–2000px wide).
 - The breadcrumb site-name link on article views targets the HTML article
-  history `/feed/<site>/articles` (site name URL-encoded) — never the RSS
-  XML endpoint `/<site>`, which an RSS reader would open as a subscription.
+  history `/feed/<site>/articles` — never the RSS XML endpoint `/<site>`, which
+  an RSS reader would open as a subscription.
+- Every internal article link percent-encodes its site segment through ONE
+  rule (`siteItemHref` in `src/server.ts`) — the breadcrumb's feed-history and
+  sibling cleaned/LLM links AND the article-row `cleaned`/title/LLM links on
+  `/` and `/feed/<site>/articles`. A literal `%`+hex in a site name (e.g.
+  `pct%20name`) keeps that encoding in the href, or the browser re-decodes it
+  and the item/LLM routes 404. Never hand-build an internal item href.
 - Every HTML page (main index, `/feed/<site>/articles`, article views)
   shares one container contract: `PAGE_SHELL_CSS` (50rem max width, 1rem
   gutters). Don't introduce a page with its own body geometry.

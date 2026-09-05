@@ -461,6 +461,10 @@ Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at
 serve time), `feedSourceFor` (per-site `extract.feedSource` → else
 `defaults.feed_source`), `readLlmSidecar` (loads `data/<site>/<hash>.llm.json`),
+`siteItemHref` (ONLY internal item-link builder: percent-encodes the site
+segment so a literal `%` in a site name survives browser URL parsing and the
+route's `decodeURIComponent` — the single rule shared by the breadcrumb and
+every article-row link),
 `articleItemHtml` (shared article-list row for `/` and `/feed/<site>/articles`:
 `Title · cleaned · original` — title opens the LLM view, falling back to the
 external source URL and then the cleaned view; `original` opens the canonical
@@ -471,7 +475,8 @@ external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
 feed, back link to the index, bounded progressive `limit`/`offset` paging),
 `breadcrumbHtml` (shared article-view breadcrumb: `← site · cleaned ·
 LLMextraction` — the site name opens the HTML article history at
-`/feed/<site>/articles`, URL-encoded, never the RSS XML endpoint) and
+`/feed/<site>/articles`, never the RSS XML endpoint; every href percent-encodes
+the site segment via the same `siteItemHref` rule) and
 `articlePageHtml` (shared shell rendering BOTH article views — cleaned and
 LLM — with one CSS source, `ARTICLE_PAGE_CSS`, so they cannot drift; only
 content, metadata and breadcrumb state differ per view).
