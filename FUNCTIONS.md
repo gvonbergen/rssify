@@ -36,6 +36,7 @@ without re-reading the whole codebase. Written from the source (verified against
 | `bin/rssify.js` | Launcher; imports `src/cli.ts` |
 | `src/cli.ts` | All CLI commands (commander) |
 | `src/add.ts` | `rssify add` — site registration, pi escalation, dry-run |
+| `src/delete-article.ts` | `rssify delete-article` — deletes one item row + its own artifacts (tombstone staging, DB-commit rollback) |
 | `src/scraper.ts` | Scrape engine: discovery loop, parse phase, persist, paywall/ad filters, quality tracking, rate limiting |
 | `src/clean.ts` | Readability cleaning, ad-block stripping, metadata extraction, image stripping |
 | `src/extract/generic.ts` | Generic scraper used by all `sites/<site>.ts` modules |
@@ -75,6 +76,7 @@ All commands open the DB via `withDb()` (creates config if missing). Invoke:
 | `scrape <site> [section]` | Manual scrape; `<site>` may be `<site>/<section>`. | `--force` |
 | `serve` | Start HTTP server + scheduler. | `--port`, `--host`, `--all`, `--limit <n>` |
 | `remove <site> [section]` | Unregister site (deletes `sites/<site>.ts` + `.config.json`; keeps `data/` unless `--purge`) or one section. | `--purge` |
+| `delete-article <site> <hash>` | Delete exactly one item plus its cleaned/raw/metadata/LLM artifacts. Copy the full 40-character hash from a listing's `/<site>/item/<hash>` link; site/section state is preserved. | |
 | `logs <site>` | Recent scrape runs + tail of `logs/rssify.log` for the site. | `--tail <n>` (default 50) |
 | `config show` | Print merged config (secrets masked). | |
 | `config set <key> <value>` | Set dotted config path; `*api_key*`/`*KEY*` values go to `.env`. | |
@@ -386,6 +388,7 @@ Tables (all created idempotently by `openDb`):
 | `insertSection` / `getSection` / `listSections` / `deleteSection` | | Section CRUD |
 | `deleteOrphanItems` | `(db, site)` | Deletes items no longer in any section |
 | `getItem` | `(db, site, hash) → ItemRow?` | |
+| `deleteItem` | `(db, site, hash) → number` | Deletes one exact item; `item_sections` rows cascade |
 | `itemSectionHashes` | `(db, site, section) → Set<string>` | |
 | `itemBelongsToSite` | `(db, site, hash) → boolean` | |
 | `insertItem` / `addItemSection` | | Item + membership (INSERT OR IGNORE) |
@@ -622,7 +625,9 @@ config.yaml, .env                  # global config + secrets
 - **Dedup hashing**: item identity = sha1 of the normalized canonical URL
   (same-origin canonical → og:url → fetched URL), slash-insensitive. Pre-parse
   dedupe checks both slash spellings so listings that link "/slug" vs "/slug/"
-  count as known without fetching.
+  count as known without fetching. The full 40-character lowercase hash appears
+  in listing links and is the unambiguous identifier accepted by
+  `delete-article <site> <hash>`; legacy `remove` remains site/section-only.
 - **Ignore-images is applied at serve time** — `rssify images <site> on` takes
   effect immediately without re-scraping (strips `<picture>` + `<img>` from
   feeds and item pages).

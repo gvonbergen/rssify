@@ -40,6 +40,7 @@ import { validateCron, nextCronRun } from './cron.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { ItemRow } from './db.ts';
+import { deleteStoredArticle } from './delete-article.ts';
 
 function withDb<T>(fn: (db: Db, config: ReturnType<typeof loadConfig>) => Promise<T> | T): Promise<T> {
   ensureConfig();
@@ -856,6 +857,23 @@ program
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
     // Keep the process alive (serve already does; this guards streamed pino fds).
+  });
+
+program
+  .command('delete-article')
+  .description('Delete exactly one stored article and its cleaned/raw/metadata/LLM artifacts.')
+  .argument('<site>', 'site identifier from the article route')
+  .argument('<hash>', '40-character hash from /<site>/item/<hash> on the HTML article listing')
+  .action(async (site: string, hash: string) => {
+    await withDb((db, config) => {
+      try {
+        const deleted = deleteStoredArticle(db, config, site, hash);
+        console.log(`deleted article '${deleted.title}' (${deleted.hash}) from '${deleted.site}'`);
+      } catch (error) {
+        console.error(`delete-article failed: ${(error as Error).message}`);
+        process.exitCode = 1;
+      }
+    });
   });
 
 program

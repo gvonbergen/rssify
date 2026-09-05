@@ -269,6 +269,10 @@ export function insertItem(db: Db, it: ItemRow): void {
      VALUES (@site,@hash,@url,@title,@published_at,@first_seen,@content_path,@content_hash,@raw_path)`,
   ).run(it);
 }
+/** Delete one exact item; item_sections rows cascade through the foreign key. */
+export function deleteItem(db: Db, site: string, hash: string): number {
+  return db.prepare('DELETE FROM items WHERE site=? AND hash=?').run(site, hash).changes;
+}
 export function updateItemPublishedAtByUrl(db: Db, site: string, url: string, publishedAt: number): number {
   return db.prepare('UPDATE items SET published_at=? WHERE site=? AND url=?').run(publishedAt, site, url).changes;
 }

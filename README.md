@@ -135,12 +135,26 @@ controlled separately by `defaults.feed_item_limit`.
 | `rssify list` | Registered sites, sections, schedule, last scrape, item count |
 | `rssify scrape <site> [section] [--force]` | Manual scrape now |
 | `rssify serve [--port] [--host]` | HTTP server + in-process scheduler |
-| `rssify remove <site> [section] [--purge]` | Unregister (keeps `data/` unless `--purge`) |
+| `rssify remove <site> [section] [--purge]` | Unregister a whole site or section (keeps `data/` unless `--purge`) |
+| `rssify delete-article <site> <hash>` | Delete exactly one stored article and all of its artifacts |
 | `rssify delay <site> [lower upper]` | View or set a site's random scrape-delay band in seconds |
 | `rssify reprofile <site>` | Re-probe a site and update its auto-adaptive extraction profile |
 | `rssify reprocess <site>` | Re-clean stored items from saved raw HTML (no re-scrape) — refreshes content/date after extraction fixes |
 | `rssify logs <site> [--tail N]` | Recent scrape runs + log lines |
 | `rssify config show / config set <key> <value>` | Edit config; `*.api_key` values write to `.env` |
+
+To delete one article, copy its 40-character `<hash>` from the existing
+**cleaned** or **LLMextraction** link on `/` or `/feed/<site>/articles` (the URL
+shape is `/<site>/item/<hash>`), then run:
+
+```sh
+rssify delete-article <site> <hash>
+```
+
+This dedicated command removes only that article's database row and its
+cleaned, raw, metadata, and LLM files. It does not alter the site, sections,
+schedule, or configuration. `rssify remove` retains its existing whole-site or
+section meaning.
 
 ## Self-adaptive extraction (no per-site code)
 
@@ -225,6 +239,7 @@ data/<site>/<hash>.html # cleaned main-content HTML (the content artifact)
 data/<site>/<hash>.raw.html # raw page HTML saved alongside (defaults.store_raw) so
                        # `rssify reprocess <site>` can re-clean without re-scraping
 data/<site>/<hash>.meta.json # optional sidecar metadata
+data/<site>/<hash>.llm.json  # optional LLM extraction sidecar
 logs/rssify.log         # structured (pino) logs
 src/                    # the app (config, db, backends, scraper, scheduler, server, cli)
 ```
