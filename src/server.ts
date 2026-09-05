@@ -22,6 +22,57 @@ export const DEFAULT_WEBSITE_ITEM_LIMIT = 10;
 export const MAX_WEBSITE_ITEM_LIMIT = 1000;
 const MAX_WEBSITE_OFFSET = 1_000_000_000;
 
+/**
+ * Reader-side constraint for article-body images, shared by both rendered
+ * article views (`cleaned` and `llm`). Images fit the article column, stay
+ * responsive at desktop and mobile widths, preserve their aspect ratio, and
+ * can never create horizontal overflow. Scoped to <article> so app chrome,
+ * index pages and RSS XML (readers apply their own CSS) are untouched.
+ * `!important` guarantees the source's width/height attributes and inline
+ * styles cannot override the reader constraint.
+ */
+export const ARTICLE_IMAGE_CSS = `article img {
+  max-width: 100% !important;
+  height: auto !important;
+}`;
+
+/**
+ * Same reader constraint, injected into stored cleaned-article documents at
+ * serve time. Cleaned documents carry no <article> wrapper — readability
+ * keeps `<div id="readability-page-1">` — so the selector covers every image
+ * in the document (the whole page IS the article). See `injectArticleCss`.
+ */
+const CLEANED_IMAGE_CSS = `img {
+  max-width: 100% !important;
+  height: auto !important;
+}`;
+
+/**
+ * Inject the article-page image constraint into a stored cleaned-article
+ * document at serve time (created per request, so existing stored articles
+ * get the fix without a re-scrape). The clean pipeline stores full-document
+ * serializations (`<html><head>…<body>…`), so the style is inserted into
+ * <head>; fragment-shaped stored content falls back to just after <body> or
+ * the document start — browsers apply a <style> element in any position.
+ */
+export function injectArticleCss(doc: string): string {
+  const viewportMeta = /<meta[^>]+name=["']viewport["']/i.test(doc)
+    ? ''
+    : '<meta name="viewport" content="width=device-width, initial-scale=1">\n';
+  const style = `<style>${CLEANED_IMAGE_CSS}\n</style>`;
+  const head = /<head[^>]*>/i.exec(doc);
+  if (head) {
+    return (
+      doc.slice(0, head.index + head[0].length) + viewportMeta + style + doc.slice(head.index + head[0].length)
+    );
+  }
+  const body = /<body[^>]*>/i.exec(doc);
+  if (body) {
+    return doc.slice(0, body.index + body[0].length) + style + doc.slice(body.index + body[0].length);
+  }
+  return style + doc;
+}
+
 function positiveInteger(value: unknown): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
@@ -430,12 +481,14 @@ ${moreLink}
     return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — LLM extraction</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; max-width: 50rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
   h1 { font-size: 1.6rem; line-height: 1.25; }
   .meta { color: #777; font-size: .85rem; margin-bottom: 1.5rem; word-break: break-all; }
   article p { line-height: 1.6; margin: 0 0 1rem; }
+  ${ARTICLE_IMAGE_CSS}
   .muted { color: #777; font-size: .85rem; }
   .muted a { color: #555; }
 </style>
@@ -512,7 +565,8 @@ ${moreLink}
         if (!it) return c.text('not found', 404);
         const html = readContent(it.content_path);
         if (html === null) return c.text('content missing', 404);
-        return c.html(ignoreImagesFor(site) ? stripImages(html) : html);
+        // Text-only mode (ignore_images) has no images left to constrain.
+        return c.html(ignoreImagesFor(site) ? stripImages(html) : injectArticleCss(html));
       }
       return c.text('not found', 404);
     }
