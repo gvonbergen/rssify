@@ -36,6 +36,7 @@ without re-reading the whole codebase. Written from the source (verified against
 | `bin/rssify.js` | Launcher; imports `src/cli.ts` |
 | `src/cli.ts` | All CLI commands (commander) |
 | `src/add.ts` | `rssify add` — site registration, pi escalation, dry-run |
+| `src/delete-article.ts` | `rssify delete-article` — deletes one item row + its own artifacts (tombstone staging, DB-commit rollback) |
 | `src/scraper.ts` | Scrape engine: discovery loop, parse phase, persist, paywall/ad filters, quality tracking, rate limiting |
 | `src/clean.ts` | Readability cleaning, ad-block stripping, metadata extraction, image stripping |
 | `src/extract/generic.ts` | Generic scraper used by all `sites/<site>.ts` modules |
@@ -387,6 +388,7 @@ Tables (all created idempotently by `openDb`):
 | `insertSection` / `getSection` / `listSections` / `deleteSection` | | Section CRUD |
 | `deleteOrphanItems` | `(db, site)` | Deletes items no longer in any section |
 | `getItem` | `(db, site, hash) → ItemRow?` | |
+| `deleteItem` | `(db, site, hash) → number` | Deletes one exact item; `item_sections` rows cascade |
 | `itemSectionHashes` | `(db, site, section) → Set<string>` | |
 | `itemBelongsToSite` | `(db, site, hash) → boolean` | |
 | `insertItem` / `addItemSection` | | Item + membership (INSERT OR IGNORE) |
