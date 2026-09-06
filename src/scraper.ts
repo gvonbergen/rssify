@@ -23,6 +23,7 @@ import { buildBackends } from './backends/index.ts';
 export { buildBackends };
 import { buildLlmExtractor } from './extract/llm.ts';
 import { absolutize, cleanHtml, extractMetadata, stripAdBlocks, textFromHtml } from './clean.ts';
+import { load } from 'cheerio';
 import { normalizeUrl, sha1, nowMs } from './util.ts';
 import { ROOT, siteLogger, type Logger } from './logger.ts';
 import { reprofileSite, GENERIC_TEMPLATE } from './extract/profile.ts';
@@ -209,6 +210,12 @@ interface ScrapeResult {
 
 /** Minimum cleaned-body length (chars) for an extraction to count as "good". */
 const MIN_QUALITY_BODY = 200;
+/** Picture-item gate: cleaned text below this length can still be a photo card. */
+const PICTURE_ITEM_MAX_TEXT = 500;
+/** A paragraph counts as substantial text at this many chars. */
+const PICTURE_ITEM_MIN_PARA = 80;
+/** Below this share of substantial paragraphs, a short image page is a photo card. */
+const PICTURE_ITEM_MAX_RATIO = 0.7;
 /** Re-probe the site profile at most this often (self-correction guard). */
 const REPROFILE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
@@ -381,7 +388,7 @@ export async function runSiteScrape(
             { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
             res.paywalled ? 'parse: paywall — skipped' : res.inserted ? 'parse: ok — new item' : 'parse: duplicate — skipped',
           );
-          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
+          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
         } catch (e) {
           // Bot-gate HTTP error (e.g. Cloudflare challenge returns 403): the
           // plain backend throws before any HTML reaches cleaning. If Firecrawl
@@ -414,7 +421,7 @@ export async function runSiteScrape(
                   { idx: i + 1, total, url: cand.url, inserted: res.inserted, ms: Date.now() - t0 },
                   res.inserted ? 'parse: firecrawl fallback ok — new item' : 'parse: firecrawl fallback ok — duplicate',
                 );
-                return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled } as const;
+                return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
               }
             } catch (e2) {
               secLog.warn({ url: cand.url, err: String(e2) }, 'firecrawl fallback failed');
@@ -425,30 +432,19 @@ export async function runSiteScrape(
             'parse failed',
           );
           errors.push(`parse ${cand.url}: ${String(e)}`);
-          return { cand: cand.url, ok: false, inserted: 0, bodyGood: false, dateGood: false } as const;
+          return { cand: cand.url, ok: false, inserted: 0, bodyGood: false, dateGood: false, paywalled: false, picture: false } as const;
         }
       });
       // Sum inserted counts + extraction-quality stats after all workers finish.
-      let paywalled = 0;
-      for (const r of results) {
-        newItems += r.inserted;
-        if (r.paywalled) paywalled += 1;
-        // Quality is measured only on NEWLY INSERTED articles — a deduplicated
-        // re-parse of something we already have says nothing about extraction
-        // quality and must not drag the rate down.
-        if (r.ok && r.inserted > 0) {
-          quality.parsed += 1;
-          if (r.bodyGood) quality.bodyGood += 1;
-          if (r.dateGood) quality.dateGood += 1;
-        }
-      }
+      const { newItems: secNewItems, paywalled, pictures } = summarizeParseResults(results, quality);
+      newItems += secNewItems;
 
       const failed = results.filter((r) => !r.ok).length;
       if (failed > 0 && failed < results.length) status = 'partial';
       // Only when there WERE parse attempts: all of them failed (results is
       // empty when every candidate was skipped as already-known).
       if (results.length > 0 && failed === results.length) status = 'partial';
-      secLog.info({ candidates: candidates.length, failed, paywalled }, 'section scrape complete');
+      secLog.info({ candidates: candidates.length, failed, paywalled, pictures }, 'section scrape complete');
     }
 
     if (errors.length > 0 && status === 'ok') status = 'partial';
@@ -500,11 +496,6 @@ export async function runSiteScrape(
   return { status, discovered, newItems, error: errors[0] ?? null };
 }
 
-/**
- * Persist a parsed article: normalize/dedup, clean + extract metadata, write
- * data/<site>/<hash>.html, insert item + section membership.
- * Returns 1 if a new item row was written, else 0.
- */
 const BOT_GATE_MARKERS = [
   'cf-chl', // Cloudflare challenge script
   'challenge-platform', // Cloudflare Turnstile
@@ -512,6 +503,8 @@ const BOT_GATE_MARKERS = [
   'cf-challenge',
   '__cf_chl_',
   'just a moment', // Cloudflare interstitial <title>
+  'captcha-delivery', // DataDome interstitial iframe/script host
+  'datadome', // DataDome bot-protection markers (js config, tags)
 ];
 
 /**
@@ -525,7 +518,48 @@ export function looksBotGated(html: string): boolean {
   return BOT_GATE_MARKERS.some((m) => lower.includes(m));
 }
 
-async function persistArticle(
+/**
+ * Heuristic: is this cleaned result a *picture item* (a licensable photo-wire
+ * card: one image plus a short caption and metadata scaffolding) rather than a
+ * text article? Such pages are legitimate feed items — a caption + image is
+ * real content for a picture wire — but they must not be scored as a weak
+ * text article in the extraction-quality rates.
+ *
+ * Classification (verified against live fixtures in the 2026-09 extraction
+ * diagnostic): img count >= 1 AND cleaned text < 500 chars AND substantial-text
+ * ratio < 0.7. The ratio (paragraphs of >= 80 chars / total paragraphs) is what
+ * separates a Reuters Connect photo card (1 substantial paragraph among 13
+ * scaffolding fragments) from a readable single-paragraph quicktake, which
+ * Readability may collapse into ONE long <p> (ratio 1.0).
+ */
+export function looksLikePictureItem(content: string, text: string): boolean {
+  if (!content || !text) return false;
+  const imgCount = (content.match(/<img\b/gi) ?? []).length;
+  if (imgCount < 1) return false;
+  const trimmed = text.trim();
+  if (trimmed.length >= PICTURE_ITEM_MAX_TEXT) return false;
+  const paras: string[] = [];
+  const $ = load(content);
+  $('p').each((_, el) => {
+    const t = $(el).text().replace(/\s+/g, ' ').trim();
+    if (t) paras.push(t);
+  });
+  // No paragraph structure at all → treat the whole text as one paragraph
+  // (conservative: a contiguous text blob is substantial, not scaffolding).
+  if (paras.length === 0) return false;
+  const substantial = paras.filter((p) => p.length >= PICTURE_ITEM_MIN_PARA).length;
+  return substantial / paras.length < PICTURE_ITEM_MAX_RATIO;
+}
+
+/**
+ * Persist a parsed article: normalize/dedup, clean + extract metadata, write
+ * data/<site>/<hash>.html, insert item + section membership.
+ * Returns 1 if a new item row was written, else 0.
+ *
+ * Exported as a test seam (backend-injected persistence without a scrape run);
+ * behavior is identical to the internal call path.
+ */
+export async function persistArticle(
   db: Db,
   config: AppConfig,
   site: string,
@@ -535,7 +569,7 @@ async function persistArticle(
   llmExtractor: ReturnType<typeof buildLlmExtractor> | null,
   backends: Backends,
   log: Logger,
-): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean }> {
+): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean; pictureItem?: boolean }> {
   if (!article || typeof article.html !== 'string' || !article.html) {
     throw new Error('parse returned empty article (no html)');
   }
@@ -780,7 +814,11 @@ async function persistArticle(
   }
   addItemSection(db, site, section, hash);
   const bodyGood = text.trim().length >= MIN_QUALITY_BODY;
-  return { inserted: 1, bodyGood, dateGood: publishedMs != null };
+  // A picture item (photo card: image + caption + scaffolding) is stored like
+  // any article, but carries no article body — the quality summary must not
+  // score it as a text article (see summarizeParseResults).
+  const pictureItem = looksLikePictureItem(content, text);
+  return { inserted: 1, bodyGood, dateGood: publishedMs != null, pictureItem };
 }
 
 /** Absolutize relative src/href in already-cleaned HTML (firecrawl path). */
@@ -828,6 +866,45 @@ function otherMeta(
 }
 
 const inflight = new Set<string>();
+
+/** Per-candidate outcome fed into the extraction-quality summary. */
+export interface ParseOutcome {
+  ok: boolean;
+  inserted: number;
+  bodyGood: boolean;
+  dateGood: boolean;
+  paywalled: boolean;
+  /** Picture item: stored normally, but excluded from the quality rates. */
+  picture: boolean;
+}
+
+/**
+ * Aggregate per-candidate outcomes into newItems / paywalled / pictures counts
+ * and the extraction-quality tallies (mutating `quality`). Quality is measured
+ * only on NEWLY INSERTED TEXT ARTICLES — a deduplicated re-parse says nothing
+ * about extraction quality, a paywalled skip is deliberate, and a picture item
+ * (caption + image card) is a legitimate stored item but has no article body
+ * to score, so none of the three may drag the rates down.
+ */
+export function summarizeParseResults(
+  results: readonly ParseOutcome[],
+  quality: ScrapeQuality,
+): { newItems: number; paywalled: number; pictures: number } {
+  let newItems = 0;
+  let paywalled = 0;
+  let pictures = 0;
+  for (const r of results) {
+    newItems += r.inserted;
+    if (r.paywalled) paywalled += 1;
+    if (r.picture) pictures += 1;
+    if (r.ok && r.inserted > 0 && !r.picture) {
+      quality.parsed += 1;
+      if (r.bodyGood) quality.bodyGood += 1;
+      if (r.dateGood) quality.dateGood += 1;
+    }
+  }
+  return { newItems, paywalled, pictures };
+}
 
 /**
  * Trailing-slash-insensitive hash set: the same URL with and without a trailing

@@ -312,8 +312,11 @@ the site's `extract.llm` isn't `false`.
    section index) and already-known items (sha1 of both slash spellings).
 3. **parse phase** with bounded concurrency (`defaults.scrape_concurrency`):
    `scraper.parse` → `persistArticle`.
-4. **quality tracking**: `bodyGood` = cleaned text ≥ `MIN_QUALITY_BODY` (200);
-   `dateGood` = parsed `published_at`. If body/date rate < 0.6 on a generic site,
+4. **quality tracking** (via `summarizeParseResults`): `bodyGood` = cleaned text
+   ≥ `MIN_QUALITY_BODY` (200); `dateGood` = parsed `published_at`. Picture items
+   (`looksLikePictureItem`: ≥1 img + text < 500 + substantial-paragraph ratio
+   < 0.7 — a photo card, not a text article) are stored normally but excluded
+   from the rates. If body/date rate < 0.6 on a generic site,
    auto-`reprofileSite` (cooldown `REPROFILE_COOLDOWN_MS` = 6 h).
 5. Summary: status `ok` / `partial` / `error`, run row + site last-scrape update.
 
@@ -325,11 +328,16 @@ the site's `extract.llm` isn't `false`.
 | `DelayBand` | interface | `{ lowerMs; upperMs }` |
 | `delayBandMs` | `(siteConfig, globalDefault) → DelayBand` | Per-site `scrape_delay` wins over `defaults.scrape_delay`; ms conversion |
 | `withRateLimit` | `(backends, band, site, log) → Backends` | Wraps every fetch with a random sleep + latency/status logging; warns on throttling (403/429/503/529, rate-limit text) |
-| `runSiteScrape` | `(db, config, site, section?) → Promise<ScrapeResult \| null>` | One full scrape run; serialized per site via `inflight` set |
+| `looksBotGated` | `(html) → boolean` | True when HTML carries a bot-protection marker (`BOT_GATE_MARKERS`: Cloudflare `cf-chl`/`challenge-platform`/etc., DataDome `captcha-delivery`/`datadome`). Only consulted when cleaning fails |
+| `looksLikePictureItem` | `(content, text) → boolean` | Picture-item gate: ≥1 `<img>` AND text < 500 chars AND paragraphs ≥80 chars / total < 0.7 |
+| `summarizeParseResults` | `(results, quality) → { newItems; paywalled; pictures }` | Aggregates per-candidate `ParseOutcome`s into the quality tallies; duplicates, paywalls and picture items never count |
+| `ParseOutcome` | interface | `{ ok; inserted; bodyGood; dateGood; paywalled; picture }` |
+| `runSiteScrape` | `(db, config, site, section?) → Promise<ScrapeResult \| null>` | One full scrape run; serialized per site via `inflight` |
+| `persistArticle` | see below | Exported as a backend-injected test seam; identical to the internal call path |
 
-### `persistArticle` (internal, key logic)
+### `persistArticle`
 
-`(db, config, site, section, cand, article, llmExtractor) → { inserted; bodyGood; dateGood; paywalled? }`
+`(db, config, site, section, cand, article, llmExtractor, backends, log) → { inserted; bodyGood; dateGood; paywalled?; pictureItem? }`
 
 1. Normalizes URL/title; reads site config for `ad_markers`.
 2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripAdBlocks`
@@ -354,7 +362,9 @@ the site's `extract.llm` isn't `false`.
 `loadScraper`, `makeContext`, `parseIso`, `randomMs`, `sleep`, `isThrottle`,
 `extractStatus`, `absolutizeBody`, `firecrawlMetadata`, `otherMeta`,
 `sha1SlashInsensitive`, `sha1BothSlashSpellings`, `mapLimit`, `inflight`,
-`MIN_QUALITY_BODY`, `REPROFILE_COOLDOWN_MS`, `ScrapeResult`.
+`MIN_QUALITY_BODY`, `PICTURE_ITEM_MAX_TEXT`, `PICTURE_ITEM_MIN_PARA`,
+`PICTURE_ITEM_MAX_RATIO`, `REPROFILE_COOLDOWN_MS`, `ScrapeResult`,
+`BOT_GATE_MARKERS`.
 
 ---
 

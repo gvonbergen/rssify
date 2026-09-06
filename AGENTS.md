@@ -58,6 +58,23 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   sidecar `publishedAt` is only displayed on the single-article `/llm` page
   and is never persisted into `published_at` (not even by `rssify reprocess`, src/cli.ts).
 
+## Extraction quality
+
+- The `bodyGood`/`dateGood` rates in the scrape quality log (`summarizeParseResults`
+  in `src/scraper.ts`) count only NEWLY INSERTED TEXT ARTICLES: duplicates,
+  paywalled skips and picture items are excluded. A picture item
+  (`looksLikePictureItem`: ≥1 `<img>` + cleaned text < 500 chars +
+  substantial-paragraph ratio < 0.7) is still inserted and stored normally —
+  a caption + image is a legitimate feed item — but must never be scored as a
+  weak text article. Don't raise `MIN_QUALITY_BODY` to handle photo cards; the
+  classifier is the fix (a readable single-paragraph quicktake can measure
+  barely above 200 chars).
+- `looksBotGated`/`BOT_GATE_MARKERS` only steer the Firecrawl fallback when
+  cleaning FAILED. Real pages of bot-protected sites legitimately embed marker
+  strings (Cloudflare `challenge-platform`, `js.datadome.co` scripts), so a
+  marker match on raw HTML is not itself a false-positive signal — the fixtures
+  in `test/fixtures/` pin this behavior.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
