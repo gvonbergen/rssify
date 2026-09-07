@@ -226,16 +226,24 @@ function extractArticle(
  * device, not a signal that the text is boilerplate (a bot-gated page would
  * have no body at all). Only inline styles are touched: Readability checks
  * `node.style` (inline), never stylesheets, and stylesheet-hidden content is
- * more often genuinely hidden template junk. Runs as a first-class pre-pass
- * (not a retry) because the boilerplate mis-extraction still SUCCEEDS, so a
- * retry-on-null would never fire.
+ * more often genuinely hidden template junk. Removal is property-boundary
+ * exact (`^|;` … `;|$`), so sibling `*-visibility` properties
+ * (`content-visibility`, `backface-visibility`) are never corrupted. Runs as
+ * a first-class pre-pass (not a retry) because the boilerplate
+ * mis-extraction still SUCCEEDS, so a retry-on-null would never fire.
  */
-function revealInlineHiddenContent(html: string): string {
+export function revealInlineHiddenContent(html: string): string {
   return html.replace(
     /style\s*=\s*(["'])([\s\S]*?)\1/gi,
     (m, quote: string, val: string) =>
-      /visibility\s*:\s*hidden/i.test(val)
-        ? `style=${quote}${val.replace(/visibility\s*:\s*hidden\s*;?/gi, '')}${quote}`
+      /(?:^|;)\s*visibility\s*:\s*hidden(?:\s*!important)?\s*(?=;|$)/i.test(val)
+        ? `style=${quote}${val
+            .replace(
+              /(^|;)\s*visibility\s*:\s*hidden(?:\s*!important)?\s*(?=;|$)/gi,
+              '$1',
+            )
+            .replace(/^;+/, '')
+            .replace(/;+$/, '')}${quote}`
         : m,
   );
 }

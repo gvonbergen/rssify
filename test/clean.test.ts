@@ -12,6 +12,7 @@ import {
   stripPrintBoilerplate,
   textFromHtml,
   textToHtml,
+  revealInlineHiddenContent,
 } from '../src/clean.ts';
 
 test('textToHtml escapes model text and makes deterministic paragraphs', () => {
@@ -120,4 +121,26 @@ test('cleanHtml reveals article bodies hidden behind an inline visibility:hidden
   assert.match(result.text, /Further details on the scope/);
   // … and the footer tagline that previously won must not.
   assert.doesNotMatch(result.text, /The Paypers is a global hub/);
+});
+
+test('revealInlineHiddenContent removes only the visibility:hidden declaration, property-boundary exact', () => {
+  // The clamp the Paypers fixture carries: first declaration in the style value.
+  assert.equal(
+    revealInlineHiddenContent('<div style="visibility:hidden;max-height:848px;overflow:hidden">x</div>'),
+    '<div style="max-height:848px;overflow:hidden">x</div>',
+  );
+  // Later declarations and !important variants go too.
+  assert.equal(
+    revealInlineHiddenContent('<div style="max-height:848px;visibility:hidden !important">x</div>'),
+    '<div style="max-height:848px">x</div>',
+  );
+  assert.equal(revealInlineHiddenContent('<div style="visibility:hidden">x</div>'), '<div style="">x</div>');
+  // Sibling *-visibility properties must never be corrupted.
+  assert.equal(
+    revealInlineHiddenContent('<div style="content-visibility:hidden;backface-visibility:hidden">x</div>'),
+    '<div style="content-visibility:hidden;backface-visibility:hidden">x</div>',
+  );
+  // No inline visibility:hidden → input passes through untouched.
+  assert.equal(revealInlineHiddenContent('<div style="color:red">x</div>'), '<div style="color:red">x</div>');
+  assert.equal(revealInlineHiddenContent('<div>plain</div>'), '<div>plain</div>');
 });
