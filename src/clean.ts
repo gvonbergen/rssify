@@ -180,8 +180,9 @@ export function cleanHtml(
   baseUrl: string,
   opts: CleanOpts = {},
 ): CleanResult | null {
-  let parsed = extractArticle(rawHtml, baseUrl);
-  if (!parsed) parsed = extractArticle(stripStylesheets(rawHtml), baseUrl);
+  const html = revealInlineHiddenContent(rawHtml);
+  let parsed = extractArticle(html, baseUrl);
+  if (!parsed) parsed = extractArticle(stripStylesheets(html), baseUrl);
   if (!parsed) return null;
   const { content: articleContent, textContent } = parsed;
   let content: string;
@@ -211,6 +212,32 @@ function extractArticle(
   } catch {
     return null;
   }
+}
+
+/**
+ * Neutralize inline `visibility:hidden` declarations before readability runs.
+ * Some publishers (e.g. The Paypers, a Nuxt SSR site) render the article body
+ * inside a container carrying inline `style="visibility:hidden;…"` and reveal
+ * it client-side. Readability's `_isProbablyVisible` drops such nodes BEFORE
+ * scoring, so the highest-scoring surviving candidate becomes site
+ * boilerplate (e.g. the footer tagline) — which then passes every quality
+ * gate because the boilerplate alone exceeds MIN_QUALITY_BODY. The hidden
+ * content is genuinely present in the served HTML; hiding it is a UI reveal
+ * device, not a signal that the text is boilerplate (a bot-gated page would
+ * have no body at all). Only inline styles are touched: Readability checks
+ * `node.style` (inline), never stylesheets, and stylesheet-hidden content is
+ * more often genuinely hidden template junk. Runs as a first-class pre-pass
+ * (not a retry) because the boilerplate mis-extraction still SUCCEEDS, so a
+ * retry-on-null would never fire.
+ */
+function revealInlineHiddenContent(html: string): string {
+  return html.replace(
+    /style\s*=\s*(["'])([\s\S]*?)\1/gi,
+    (m, quote: string, val: string) =>
+      /visibility\s*:\s*hidden/i.test(val)
+        ? `style=${quote}${val.replace(/visibility\s*:\s*hidden\s*;?/gi, '')}${quote}`
+        : m,
+  );
 }
 
 /** Remove <style> blocks + stylesheet <link>s (jsdom CSS crash workaround). */

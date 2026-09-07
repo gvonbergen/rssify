@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   absolutize,
   cleanHtml,
@@ -102,4 +104,20 @@ test('cleanHtml extracts readable article content and absolutizes relative asset
   assert.match(result.content, /https:\/\/example\.test\/hero\.jpg/);
   assert.match(result.text, /useful details/);
   assert.doesNotMatch(result.text, /Chrome|Footer/);
+});
+
+test('cleanHtml reveals article bodies hidden behind an inline visibility:hidden clamp (The Paypers)', () => {
+  // The Paypers (Nuxt SSR) ships the article prose inside a container with
+  // inline style="visibility:hidden;max-height:…;overflow:hidden" and reveals
+  // it client-side. Readability drops inline-hidden nodes before scoring, so
+  // without this pre-pass the footer tagline boilerplate wins and is stored
+  // as the article (regression captured from the live page, 2026-09-07).
+  const raw = readFileSync(join(import.meta.dirname, 'fixtures', 'paypers-hidden-body-raw.html'), 'utf8');
+  const result = cleanHtml(raw, 'https://thepaypers.com/crypto-web3-and-cbdc/news/coinbase-seeks-sec-approval-to-offer-equity-perpetuals');
+  assert.ok(result);
+  // The real Reuters-sourced article body must survive extraction …
+  assert.match(result.text, /Coinbase has filed with the US Securities and Exchange Commission/);
+  assert.match(result.text, /Further details on the scope/);
+  // … and the footer tagline that previously won must not.
+  assert.doesNotMatch(result.text, /The Paypers is a global hub/);
 });
