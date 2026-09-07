@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   absolutize,
   cleanHtml,
@@ -10,6 +12,7 @@ import {
   stripPrintBoilerplate,
   textFromHtml,
   textToHtml,
+  revealInlineHiddenContent,
 } from '../src/clean.ts';
 
 test('textToHtml escapes model text and makes deterministic paragraphs', () => {
@@ -102,4 +105,57 @@ test('cleanHtml extracts readable article content and absolutizes relative asset
   assert.match(result.content, /https:\/\/example\.test\/hero\.jpg/);
   assert.match(result.text, /useful details/);
   assert.doesNotMatch(result.text, /Chrome|Footer/);
+});
+
+test('cleanHtml reveals article bodies hidden behind an inline visibility:hidden clamp (The Paypers)', () => {
+  // The Paypers (Nuxt SSR) ships the article prose inside a container with
+  // inline style="visibility:hidden;max-height:…;overflow:hidden" and reveals
+  // it client-side. Readability drops inline-hidden nodes before scoring, so
+  // without this pre-pass the footer tagline boilerplate wins and is stored
+  // as the article (regression captured from the live page, 2026-09-07).
+  const raw = readFileSync(join(import.meta.dirname, 'fixtures', 'paypers-hidden-body-raw.html'), 'utf8');
+  const result = cleanHtml(raw, 'https://thepaypers.com/crypto-web3-and-cbdc/news/coinbase-seeks-sec-approval-to-offer-equity-perpetuals');
+  assert.ok(result);
+  // The real Reuters-sourced article body must survive extraction …
+  assert.match(result.text, /Coinbase has filed with the US Securities and Exchange Commission/);
+  assert.match(result.text, /Further details on the scope/);
+  // … and the footer tagline that previously won must not.
+  assert.doesNotMatch(result.text, /The Paypers is a global hub/);
+});
+
+test('revealInlineHiddenContent removes only the visibility:hidden declaration, property-boundary exact', () => {
+  // The clamp the Paypers fixture carries: first declaration in the style value.
+  assert.equal(
+    revealInlineHiddenContent('<div style="visibility:hidden;max-height:848px;overflow:hidden">x</div>'),
+    '<div style="max-height:848px;overflow:hidden">x</div>',
+  );
+  // Later declarations and !important variants go too.
+  assert.equal(
+    revealInlineHiddenContent('<div style="max-height:848px;visibility:hidden !important">x</div>'),
+    '<div style="max-height:848px">x</div>',
+  );
+  assert.equal(revealInlineHiddenContent('<div style="visibility:hidden">x</div>'), '<div style="">x</div>');
+  // Sibling *-visibility properties must never be corrupted.
+  assert.equal(
+    revealInlineHiddenContent('<div style="content-visibility:hidden;backface-visibility:hidden">x</div>'),
+    '<div style="content-visibility:hidden;backface-visibility:hidden">x</div>',
+  );
+  // Only genuine style attributes on elements are touched: `style=`-shaped
+  // text inside onclick handlers, script bodiesand comments must pass
+  // through unchanged (the old whole-document string regex corrupted the JS).
+  assert.equal(
+    revealInlineHiddenContent(
+      '<div style="visibility:hidden;color:red">r</div>' +
+      '<button onclick="document.body.style=\'visibility:hidden\'">b</button>' +
+      '<script>document.body.style=\'visibility:hidden\'</script>' +
+      '<!-- style="visibility:hidden" -->',
+    ),
+    '<div style="color:red">r</div>' +
+    '<button onclick="document.body.style=\'visibility:hidden\'">b</button>' +
+    '<script>document.body.style=\'visibility:hidden\'</script>' +
+    '<!-- style="visibility:hidden" -->',
+  );
+  // No inline visibility:hidden → input passes through untouched.
+  assert.equal(revealInlineHiddenContent('<div style="color:red">x</div>'), '<div style="color:red">x</div>');
+  assert.equal(revealInlineHiddenContent('<div>plain</div>'), '<div>plain</div>');
 });
