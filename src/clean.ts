@@ -226,26 +226,25 @@ function extractArticle(
  * device, not a signal that the text is boilerplate (a bot-gated page would
  * have no body at all). Only inline styles are touched: Readability checks
  * `node.style` (inline), never stylesheets, and stylesheet-hidden content is
- * more often genuinely hidden template junk. Removal is property-boundary
- * exact (`^|;` … `;|$`), so sibling `*-visibility` properties
+ * more often genuinely hidden template junk. Removal is declaration-boundary
+ * exact, so sibling `*-visibility` properties
  * (`content-visibility`, `backface-visibility`) are never corrupted. Runs as
  * a first-class pre-pass (not a retry) because the boilerplate
  * mis-extraction still SUCCEEDS, so a retry-on-null would never fire.
  */
 export function revealInlineHiddenContent(html: string): string {
-  return html.replace(
-    /style\s*=\s*(["'])([\s\S]*?)\1/gi,
-    (m, quote: string, val: string) =>
-      /(?:^|;)\s*visibility\s*:\s*hidden(?:\s*!important)?\s*(?=;|$)/i.test(val)
-        ? `style=${quote}${val
-            .replace(
-              /(^|;)\s*visibility\s*:\s*hidden(?:\s*!important)?\s*(?=;|$)/gi,
-              '$1',
-            )
-            .replace(/^;+/, '')
-            .replace(/;+$/, '')}${quote}`
-        : m,
-  );
+  const isDocument = /<!doctype\s+html|<\s*html[\s>]/i.test(html);
+  const $ = isDocument ? load(html) : load(`<div id="__rssify_reveal">${html}</div>`);
+  const visibilityHidden = /^visibility\s*:\s*hidden(?:\s*!important)?$/i;
+  $('[style]').each((_i, el: any) => {
+    const style = String($(el).attr('style') ?? '');
+    const decls = style.split(';').map((d) => d.trim());
+    const kept = decls.filter((d) => !visibilityHidden.test(d));
+    if (kept.length !== decls.length) $(el).attr('style', kept.join(';'));
+  });
+  if (isDocument) return $.html() ?? html;
+  const out = $('#__rssify_reveal').html();
+  return typeof out === 'string' ? out : html;
 }
 
 /** Remove <style> blocks + stylesheet <link>s (jsdom CSS crash workaround). */

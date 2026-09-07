@@ -140,6 +140,21 @@ test('revealInlineHiddenContent removes only the visibility:hidden declaration, 
     revealInlineHiddenContent('<div style="content-visibility:hidden;backface-visibility:hidden">x</div>'),
     '<div style="content-visibility:hidden;backface-visibility:hidden">x</div>',
   );
+  // Only genuine style attributes on elements are touched: `style=`-shaped
+  // text inside onclick handlers, script bodiesand comments must pass
+  // through unchanged (the old whole-document string regex corrupted the JS).
+  assert.equal(
+    revealInlineHiddenContent(
+      '<div style="visibility:hidden;color:red">r</div>' +
+      '<button onclick="document.body.style=\'visibility:hidden\'">b</button>' +
+      '<script>document.body.style=\'visibility:hidden\'</script>' +
+      '<!-- style="visibility:hidden" -->',
+    ),
+    '<div style="color:red">r</div>' +
+    '<button onclick="document.body.style=\'visibility:hidden\'">b</button>' +
+    '<script>document.body.style=\'visibility:hidden\'</script>' +
+    '<!-- style="visibility:hidden" -->',
+  );
   // No inline visibility:hidden → input passes through untouched.
   assert.equal(revealInlineHiddenContent('<div style="color:red">x</div>'), '<div style="color:red">x</div>');
   assert.equal(revealInlineHiddenContent('<div>plain</div>'), '<div>plain</div>');
