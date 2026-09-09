@@ -680,6 +680,7 @@ program
               updates.content_hash = newHash;
             }
           }
+          const oneDayMs = 24 * 60 * 60 * 1000;
           if (meta.publishedAt) {
             const t = Date.parse(meta.publishedAt);
             // Reprocess reads the page's metadata, whose visible-text fallback
@@ -689,7 +690,6 @@ program
             // an article cannot have been published more than a day after it
             // was discovered, so a later page date is implausible and must
             // never move published_at (it bubbles to the top of feed/overview).
-            const oneDayMs = 24 * 60 * 60 * 1000;
             if (
               Number.isFinite(t) &&
               t !== row.published_at &&
@@ -697,6 +697,9 @@ program
             ) {
               updates.published_at = t;
             }
+          }
+          if (row.published_at !== null && row.published_at > row.first_seen + oneDayMs) {
+            updates.published_at = row.first_seen;
           }
           if ((!row.title || row.title === 'Untitled') && meta.title) {
             updates.title = meta.title;

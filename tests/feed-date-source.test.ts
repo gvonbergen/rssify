@@ -452,3 +452,98 @@ test('reprocess never writes a future in-text page date into published_at', asyn
     await removeTempDir(dir);
   }
 });
+
+test('reprocess heals an already-polluted future published_at back to first_seen and preserves RSS-derived dates', async () => {
+  // Production state at deploy time (googlenews, PR #8 aftermath): the
+  // affected items already carry a FUTURE published_at — the pre-fix reprocess
+  // wrote an in-text page date (e.g. 'February 4, 2027') over the stored
+  // value. For such a row the guard alone computes Date.parse(meta) === the
+  // stored value and skips the UPDATE, so nothing would ever correct it; the
+  // heal branch must reset it to first_seen. A near-first_seen date (what the
+  // Google Alerts Atom <published> hint stores) is NOT pollution and must stay.
+  const dir = await makeTempDir();
+  const preserved = await Promise.all(
+    [CONFIG_PATH, ENV_PATH].map(async (p) => ({
+      path: p,
+      existed: existsSync(p),
+      original: existsSync(p) ? await readFile(p, 'utf8') : null,
+    })),
+  );
+  try {
+    await writeFile(
+      CONFIG_PATH,
+      YAML.stringify({
+        storage: { data_dir: join(dir, 'data'), db_path: join(dir, 'state.sqlite') },
+      }),
+      'utf8',
+    );
+    const { db } = openTempDb(dir);
+    const siteDir = join(dir, 'data', 'example');
+    await mkdir(siteDir, { recursive: true });
+    seedSite(db);
+
+    const futureInText = 'February 4, 2027';
+    const discoveredAt = Date.parse('2026-09-04T10:00:00Z');
+
+    // The real polluted state: published_at is already IN THE FUTURE, and the
+    // raw page's only date is another future in-text date.
+    const pollutedRawPath = join(siteDir, 'polluted.raw.html');
+    await writeFile(
+      pollutedRawPath,
+      '<html><body><article><h1>Press release</h1>' +
+        `<p>The act takes effect on ${futureInText}.</p></article></body></html>`,
+      'utf8',
+    );
+    const pollutedItem = itemRow('example', 'polluted', join(dir, 'polluted.html'));
+    pollutedItem.published_at = Date.parse(futureInText);
+    pollutedItem.first_seen = discoveredAt;
+    pollutedItem.raw_path = pollutedRawPath;
+    insertItem(db, pollutedItem);
+
+    // Control: stored published_at is the sane Google Alerts RSS date (just
+    // before discovery); the heal must leave it alone even though the raw page
+    // again mentions only a future in-text date.
+    const rssRawPath = join(siteDir, 'rss-date.raw.html');
+    await writeFile(
+      rssRawPath,
+      '<html><body><article><h1>News</h1>' +
+        `<p>An event is planned for ${futureInText}.</p></article></body></html>`,
+      'utf8',
+    );
+    const rssItem = itemRow('example', 'rss-date', join(dir, 'rss-date.html'));
+    rssItem.published_at = discoveredAt - 3600_000;
+    rssItem.first_seen = discoveredAt;
+    rssItem.raw_path = rssRawPath;
+    insertItem(db, rssItem);
+    db.close();
+
+    const run = await runCli(['src/cli.ts', 'reprocess', 'example']);
+    assert.equal(run.status, 0, `${run.stderr} ${run.stdout}`);
+
+    const reopened = openTempDb(dir);
+    try {
+      const rows = reopened.db
+        .prepare('SELECT hash, published_at, first_seen FROM items WHERE site=? AND hash IN (?,?)')
+        .all('example', 'polluted', 'rss-date') as {
+        hash: string;
+        published_at: number | null;
+        first_seen: number;
+      }[];
+      const polluted = rows.find((r) => r.hash === 'polluted')!;
+      const rssDate = rows.find((r) => r.hash === 'rss-date')!;
+      // The polluted future date is reset to first_seen.
+      assert.equal(polluted.published_at, polluted.first_seen);
+      assert.notEqual(polluted.published_at, Date.parse(futureInText));
+      // The RSS/feed-derived date is preserved.
+      assert.equal(rssDate.published_at, discoveredAt - 3600_000);
+    } finally {
+      reopened.db.close();
+    }
+  } finally {
+    for (const p of preserved) {
+      if (p.existed && p.original !== null) await writeFile(p.path, p.original, 'utf8');
+      else if (!p.existed) await rm(p.path, { force: true });
+    }
+    await removeTempDir(dir);
+  }
+});
