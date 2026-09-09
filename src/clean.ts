@@ -1,7 +1,47 @@
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 import { load } from 'cheerio';
 import { Readability } from '@mozilla/readability';
 import { normalizeUrl } from './util.ts';
+import { logger } from './logger.ts';
+
+/**
+ * Minimal logger shape the jsdom warning router needs. pino loggers satisfy
+ * it structurally; kept narrow so tests can pass a capturing fake.
+ */
+export interface JsdomWarningSink {
+  warn(fields: Record<string, unknown>, msg: string): void;
+}
+
+/** Cap the offending-CSS snippet attached to a warning (sheetText can be huge). */
+const MAX_CSS_SNIPPET = 200;
+
+/**
+ * Construct a JSDOM whose virtual console routes jsdomErrors (recoverable
+ * `<style>`/stylesheet parse failures such as "Could not parse CSS
+ * stylesheet") through the RSSify logger WITH the page URL attached, instead
+ * of jsdom's default virtual console, which forwards the bare message to
+ * `console.error` with no site/item context. Warnings stay non-fatal: jsdom
+ * keeps the valid parts of a broken stylesheet and parsing continues.
+ */
+export function openAttributedDom(
+  html: string,
+  url: string,
+  sink: JsdomWarningSink = logger,
+): JSDOM {
+  const vc = new VirtualConsole();
+  vc.on('jsdomError', (e: Error & { type?: string; sheetText?: string }) => {
+    const sheet = typeof e.sheetText === 'string' ? e.sheetText : undefined;
+    sink.warn(
+      {
+        url,
+        jsdomErrorType: e.type,
+        css: sheet ? sheet.slice(0, MAX_CSS_SNIPPET) : undefined,
+      },
+      `jsdom: ${e.message}`,
+    );
+  });
+  return new JSDOM(html, { url, virtualConsole: vc });
+}
 
 export interface ParsedMetadata {
   title?: string;
@@ -129,6 +169,8 @@ export function stripPrintBoilerplate(html: string): string {
 export interface CleanOpts {
   /** Per-site opt-in: whole-block ad markers (see `stripAdBlocks`). */
   adMarkers?: string[];
+  /** Warning sink for jsdom CSS parse warnings (defaults to the root logger). */
+  log?: JsdomWarningSink;
 }
 
 /**
@@ -181,8 +223,8 @@ export function cleanHtml(
   opts: CleanOpts = {},
 ): CleanResult | null {
   const html = revealInlineHiddenContent(rawHtml);
-  let parsed = extractArticle(html, baseUrl);
-  if (!parsed) parsed = extractArticle(stripStylesheets(html), baseUrl);
+  let parsed = extractArticle(html, baseUrl, opts.log);
+  if (!parsed) parsed = extractArticle(stripStylesheets(html), baseUrl, opts.log);
   if (!parsed) return null;
   const { content: articleContent, textContent } = parsed;
   let content: string;
@@ -199,18 +241,27 @@ export function cleanHtml(
   return { content: absolutize(content, baseUrl), text };
 }
 
-/** One JSDOM + Readability attempt; null when construction or parsing fails. */
+/**
+ * One JSDOM + Readability attempt; null when construction or parsing fails.
+ * CSS parse warnings are attributed to `baseUrl` via `openAttributedDom`, and
+ * the window is closed eagerly — jsdom 29 retains per-window memory even
+ * after the reference drops, and `close()` is the documented release hook.
+ */
 function extractArticle(
   html: string,
   baseUrl: string,
+  sink?: JsdomWarningSink,
 ): { content: string; textContent: string | null | undefined } | null {
+  let dom: JSDOM | null = null;
   try {
-    const dom = new JSDOM(html, { url: baseUrl });
+    dom = openAttributedDom(html, baseUrl, sink);
     const article = new Readability(dom.window.document).parse();
     if (!article || !article.content) return null;
     return { content: article.content, textContent: article.textContent };
   } catch {
     return null;
+  } finally {
+    dom?.window.close();
   }
 }
 

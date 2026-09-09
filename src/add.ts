@@ -10,12 +10,12 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { JSDOM } from 'jsdom';
 import { ROOT } from './logger.ts';
 import type { AppConfig } from './config.ts';
 import { buildBackends, engineGuide, type EngineName } from './backends/index.ts';
 import { getSection, getSite, insertSection, insertSite, type Db } from './db.ts';
-import { cleanHtml, extractMetadata } from './clean.ts';
+import { extractMetadata, openAttributedDom } from './clean.ts';
+import { cleanHtmlAsync } from './cleanRunner.ts';
 import { genericModuleSource, profileFromSnapshot } from './extract/profile.ts';
 import { isValidIdentifier, nowMs, slugify } from './util.ts';
 import type {
@@ -79,7 +79,7 @@ async function buildAddSnapshot(
   }
   if (!html) throw new Error(`the '${engine}' engine returned empty content for ${url}`);
 
-  const cleaned = cleanHtml(html, url);
+  const cleaned = await cleanHtmlAsync(html, url);
   const meta = extractMetadata(html, url);
   const pageTitle = meta.title || extractTitle(html) || url;
   const text = (cleaned?.text ?? '').slice(0, 6000);
@@ -128,7 +128,7 @@ function buildLinkInventory(html: string, baseUrl: string): { href: string; text
     }
   };
   try {
-    const dom = new JSDOM(html);
+    const dom = openAttributedDom(html, baseUrl);
     for (const a of dom.window.document.querySelectorAll('a[href]')) {
       add(a.getAttribute('href') || '', a.textContent ?? '');
     }

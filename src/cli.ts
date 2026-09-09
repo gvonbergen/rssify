@@ -33,7 +33,8 @@ import { buildLlmExtractor } from './extract/llm.ts';
 import { createApp } from './server.ts';
 import { Scheduler } from './scheduler.ts';
 import { logger, siteLogger, type Logger, ROOT } from './logger.ts';
-import { cleanHtml, extractMetadata } from './clean.ts';
+import { extractMetadata } from './clean.ts';
+import { cleanHtmlAsync } from './cleanRunner.ts';
 import { sha1, slugify, isValidIdentifier, normalizeUrl, nowMs } from './util.ts';
 import { parseGoogleAlertsFeed } from '../sites/googlenews.ts';
 import { validateCron, nextCronRun } from './cron.ts';
@@ -668,7 +669,11 @@ program
           const adMarkers = Array.isArray(ext['ad_markers'])
             ? (ext['ad_markers'] as unknown[]).map(String)
             : [];
-          const cleaned = cleanHtml(raw, row.url, { adMarkers });
+          // Worker-threaded cleaner: jsdom 29 retains one window per parse
+          // (~35–40x doc size) even after close()+GC, which is what OOM-crashed
+          // whole-backlog reprocess runs. cleanHtmlAsync recycles the worker on
+          // a byte/item budget so the leak dies with the worker, not the process.
+          const cleaned = await cleanHtmlAsync(raw, row.url, { adMarkers, log });
           const meta = extractMetadata(raw, row.url);
           const updates: Record<string, unknown> = {};
           if (cleaned) {
