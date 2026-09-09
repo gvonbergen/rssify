@@ -49,6 +49,8 @@ interface Pending {
 }
 
 let worker: Worker | null = null;
+/** Workers whose budget is spent but which still have in-flight requests. */
+let retiring: Worker[] = [];
 let bytesSinceSpawn = 0;
 let itemsSinceSpawn = 0;
 let nextId = 1;
@@ -59,6 +61,42 @@ function idleIfNoPending() {
   if (pending.size === 0) worker?.unref();
 }
 
+function hasPendingOn(w: Worker): boolean {
+  for (const p of pending.values()) {
+    if (p.owner === w) return true;
+  }
+  return false;
+}
+
+function retireWorker(w: Worker) {
+  stats.recycled++;
+  if (worker === w) worker = null;
+  void w.terminate();
+}
+
+/**
+ * Recycle `w` when its budget is spent, but never while requests are still in
+ * flight on it — terminating mid-flight drops sibling requests with a spurious
+ * null. A busy worker is parked in `retiring` and terminated once its pending
+ * set drains (see `retireIdleWorkers`).
+ */
+function scheduleRetirement(w: Worker) {
+  if (worker === w) worker = null;
+  if (hasPendingOn(w)) {
+    if (!retiring.includes(w)) retiring.push(w);
+    return;
+  }
+  retireWorker(w);
+}
+
+/** Terminate parked workers whose in-flight requests have all drained. */
+function retireIdleWorkers() {
+  const done = retiring.filter((w) => !hasPendingOn(w));
+  if (done.length === 0) return;
+  retiring = retiring.filter((w) => !done.includes(w));
+  for (const w of done) retireWorker(w);
+}
+
 function dropPending(owner?: Worker) {
   for (const [id, p] of pending) {
     if (owner && p.owner !== owner) continue;
@@ -67,12 +105,7 @@ function dropPending(owner?: Worker) {
     p.resolve(null);
   }
   idleIfNoPending();
-}
-
-function retireWorker(w: Worker) {
-  stats.recycled++;
-  worker = null;
-  void w.terminate();
+  retireIdleWorkers();
 }
 
 function spawnWorker(): Worker {
@@ -95,6 +128,7 @@ function spawnWorker(): Worker {
       logger.warn({ error: res['error'] }, 'clean worker reported extraction failure');
     }
     idleIfNoPending();
+    retireIdleWorkers();
     p.resolve((res['result'] as CleanResult | null) ?? null);
   });
   w.on('error', (e) => {
@@ -109,6 +143,12 @@ function spawnWorker(): Worker {
     dropPending(w);
     if (worker === w) worker = null;
   });
+  // A fresh worker generation starts with a fresh budget; the retired
+  // worker's spent counters must not carry over (otherwise the next request
+  // immediately reverts the new worker — one clean per worker for the rest
+  // of the run).
+  bytesSinceSpawn = 0;
+  itemsSinceSpawn = 0;
   return w;
 }
 
@@ -130,7 +170,7 @@ export function cleanHtmlAsync(
     worker &&
     (bytesSinceSpawn > cleanRecycleLimits.bytes || itemsSinceSpawn > cleanRecycleLimits.items)
   ) {
-    retireWorker(worker);
+    scheduleRetirement(worker);
   }
   if (!worker) worker = spawnWorker();
   const w = worker;
@@ -148,7 +188,19 @@ export function cleanHtmlAsync(
         { url: baseUrl, timeoutMs: cleanRecycleLimits.requestTimeoutMs },
         'clean worker timed out — recycling',
       );
-      if (worker === w) retireWorker(w);
+      if (worker === w) {
+        retireWorker(w);
+      } else {
+        // A parked (budget-spent) worker wedged: its own timed-out request
+        // was just dropped, so force-recycle the wedged worker instead of
+        // leaving it parked in `retiring` forever.
+        const i = retiring.indexOf(w);
+        if (i >= 0) {
+          retiring.splice(i, 1);
+          stats.recycled++;
+          void w.terminate();
+        }
+      }
       resolve(null);
     }, cleanRecycleLimits.requestTimeoutMs);
     pending.set(id, { resolve, timer, sink, owner: w });
@@ -183,6 +235,8 @@ export async function resetCleanRunnerForTests(): Promise<void> {
     worker = null;
     await w.terminate();
   }
+  for (const w of retiring) void w.terminate();
+  retiring = [];
   dropPending();
   bytesSinceSpawn = 0;
   itemsSinceSpawn = 0;

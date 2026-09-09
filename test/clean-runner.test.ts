@@ -92,8 +92,11 @@ test('cleanHtmlAsync recycles its worker at the item budget and keeps producing 
       assert.match(r.text, /Worker pool title/);
     }
     const stats = cleanRunnerStats();
-    assert.ok(stats.spawned >= 3, `expected >=3 worker spawns, got ${stats.spawned}`);
-    assert.ok(stats.recycled >= 2, `expected >=2 recycles, got ${stats.recycled}`);
+    // The worker is recycled ONCE when the budget crosses the 2-item limit;
+    // the replacement then carries a fresh budget (no one-clean-per-worker
+    // churn), so exactly one recycle happened across the five requests.
+    assert.equal(stats.spawned, 2, `expected exactly 2 worker spawns, got ${stats.spawned}`);
+    assert.equal(stats.recycled, 1, `expected exactly 1 recycle, got ${stats.recycled}`);
   } finally {
     Object.assign(cleanRecycleLimits, saved);
     await resetCleanRunnerForTests();
@@ -112,6 +115,55 @@ test('cleanHtmlAsync recycles at the byte budget', async () => {
     }
     const stats = cleanRunnerStats();
     assert.ok(stats.spawned >= 3, `expected >=3 worker spawns, got ${stats.spawned}`);
+  } finally {
+    Object.assign(cleanRecycleLimits, saved);
+    await resetCleanRunnerForTests();
+  }
+});
+
+test('cleanHtmlAsync resets the byte budget for each worker generation', async () => {
+  await resetCleanRunnerForTests();
+  const saved = { ...cleanRecycleLimits };
+  // Two article payloads exceed the budget but one does not: the first two
+  // cleans share a worker, the third trips the recycle, and the fourth must
+  // reuse the fresh worker instead of churning a new one per request.
+  cleanRecycleLimits.bytes = ARTICLE_PAGE.length + 10;
+  cleanRecycleLimits.items = Number.MAX_SAFE_INTEGER;
+  try {
+    for (let i = 0; i < 4; i++) {
+      const r = await cleanHtmlAsync(ARTICLE_PAGE, BASE);
+      assert.ok(r, `clean ${i} should succeed`);
+    }
+    const stats = cleanRunnerStats();
+    assert.equal(stats.spawned, 2, `expected exactly 2 worker spawns, got ${stats.spawned}`);
+    assert.equal(stats.recycled, 1, `expected exactly 1 recycle, got ${stats.recycled}`);
+  } finally {
+    Object.assign(cleanRecycleLimits, saved);
+    await resetCleanRunnerForTests();
+  }
+});
+
+test('cleanHtmlAsync never recycles a worker that still has requests in flight', async () => {
+  await resetCleanRunnerForTests();
+  const saved = { ...cleanRecycleLimits };
+  // One article payload already spends the byte budget, so the second
+  // concurrent clean crosses the limit while the first is still in flight.
+  cleanRecycleLimits.bytes = Math.floor(ARTICLE_PAGE.length / 2);
+  cleanRecycleLimits.items = Number.MAX_SAFE_INTEGER;
+  try {
+    const [a, b] = await Promise.all([
+      cleanHtmlAsync(ARTICLE_PAGE, BASE),
+      cleanHtmlAsync(ARTICLE_PAGE, BASE),
+    ]);
+    // The in-flight request must NOT be dropped by the recycle: both cleans
+    // complete with real extraction results (never a spurious null).
+    assert.ok(a, 'first in-flight clean must survive the recycle boundary');
+    assert.match(a.text, /Worker pool title/);
+    assert.ok(b, 'second clean must succeed on the replacement worker');
+    assert.match(b.text, /Worker pool title/);
+    const stats = cleanRunnerStats();
+    assert.equal(stats.spawned, 2, `expected exactly 2 worker spawns, got ${stats.spawned}`);
+    assert.equal(stats.recycled, 1, `expected exactly 1 recycle, got ${stats.recycled}`);
   } finally {
     Object.assign(cleanRecycleLimits, saved);
     await resetCleanRunnerForTests();
