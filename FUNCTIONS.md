@@ -72,7 +72,7 @@ All commands open the DB via `withDb()` (creates config if missing). Invoke:
 | `follow <site> [action]` | View/set pagination-follow: `on \| off \| until404 \| <depth 0-8> \| none`. | |
 | `images <site> [action]` | View/set picture stripping: `on \| off \| none`. Applied at serve time. | |
 | `reprofile <site>` | Re-fetch index, re-detect extraction mode, update saved profile. | |
-| `reprocess <site>` | Re-clean **stored items from saved raw HTML** (no re-scrape). Updates content hash, publish date, title if improved. | `--refetch` (re-fetch pages instead of using raw) |
+| `reprocess <site>` | Re-clean **stored items from saved raw HTML** (no re-scrape). Updates content hash, title; page date only when plausible (`<= first_seen + 1 day`), and an implausible future `published_at` is reset to `first_seen`. | `--refetch` (re-fetch pages instead of using raw) |
 | `scrape <site> [section]` | Manual scrape; `<site>` may be `<site>/<section>`. | `--force` |
 | `serve` | Start HTTP server + scheduler. | `--port`, `--host`, `--all`, `--limit <n>` |
 | `remove <site> [section]` | Unregister site (deletes `sites/<site>.ts` + `.config.json`; keeps `data/` unless `--purge`) or one section. | `--purge` |

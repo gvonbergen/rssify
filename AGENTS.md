@@ -57,6 +57,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   away from the overview (future dates bubble to the top of readers). The
   sidecar `publishedAt` is only displayed on the single-article `/llm` page
   and is never persisted into `published_at` (not even by `rssify reprocess`, src/cli.ts).
+  `published_at` must never be more than a day after `first_seen`: `choosePublishedDate`
+  (src/extract/generic.ts) clamps at scrape time, and `rssify reprocess` (src/cli.ts)
+  mirrors that clamp (never writes an implausible future page date) and heals an
+  already-polluted future `published_at` back to `first_seen` (regression tests in
+  tests/feed-date-source.test.ts).
 
 ## Extraction quality
 
