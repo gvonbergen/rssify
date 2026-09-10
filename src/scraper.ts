@@ -22,7 +22,8 @@ import type { AppConfig } from './config.ts';
 import { buildBackends } from './backends/index.ts';
 export { buildBackends };
 import { buildLlmExtractor } from './extract/llm.ts';
-import { absolutize, cleanHtml, extractMetadata, stripAdBlocks, textFromHtml } from './clean.ts';
+import { absolutize, extractMetadata, stripAdBlocks, textFromHtml } from './clean.ts';
+import { cleanHtmlAsync } from './cleanRunner.ts';
 import { load } from 'cheerio';
 import { normalizeUrl, sha1, nowMs } from './util.ts';
 import { ROOT, siteLogger, type Logger } from './logger.ts';
@@ -606,7 +607,9 @@ export async function persistArticle(
     meta = firecrawlMetadata(article.metadata);
   } else {
     // camofox path: raw page → readability + metadata extraction
-    const cleaned = cleanHtml(article.html, article.url, { adMarkers });
+    // (worker-threaded cleaner: jsdom 29's per-window retention leak is
+    // recycled away by cleanHtmlAsync instead of accumulating in this process)
+    const cleaned = await cleanHtmlAsync(article.html, article.url, { adMarkers, log });
     if (!cleaned) {
       // Bot-protection interstitial (e.g. Cloudflare challenge)? The fetch
       // returns the challenge page with no article. Retry once through

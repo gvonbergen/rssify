@@ -20,7 +20,7 @@ without re-reading the whole codebase. Written from the source (verified against
 | Understand the scrape pipeline | [Scrape lifecycle](#11-scrape-lifecycle-srcscraperts) |
 | Write/extend a site module (`sites/<site>.ts`) | [Scraper-module contract](#6-scraper-module-contract) + [§5 `src/contract.ts`](#5-srccontractts--scraper-module-contract) |
 | Tune per-site extraction (mode, max, follow, ad/paywall, images…) | [Site config_json knobs](#4-site-config_json-knobs) |
-| Fix extraction quality / paywall / ad-box issues | [§11 `persistArticle`](#11-scrape-lifecycle-srcscraperts), [§10 `src/clean.ts`](#10-srccleants--cleaning-metadata-filters), [reprocess command](#2-cli-commands) |
+| Fix extraction quality / paywall / ad-box issues | [§11 `persistArticle`](#11-scrape-lifecycle-srcscraperts), [§10 `src/clean.ts`](#10-srccleants--cleaning-metadata-filters), [§10c worker cleaning](#10c-srccleanrunnerts--worker-bounded-cleaning), [reprocess command](#2-cli-commands) |
 | Understand/compare LLM extraction (title/text/link/date) | [§10b `src/extract/llm.ts`](#10b-srcextractllmts--llm-extraction-parallel-path), [§4 `extract.llm`/`feedSource`](#4-site-config_json-knobs) |
 | Understand discovery (anchors / embedded JSON / JSON-LD) | [§8 `src/extract/discover.ts`](#8-srcextractdiscoverts--discovery-engine) |
 | See feed/HTML routes | [HTTP routes](#3-http-routes) |
@@ -260,11 +260,13 @@ Internal helpers (not exported): `collectAnchors`, `collectJson`, `usable`,
 |---|---|---|
 | `ParsedMetadata` | interface | `{ title?; author?; publishedAt?; image?; canonical?; ogUrl? }` |
 | `CleanResult` | interface | `{ content: string; text: string }` |
-| `CleanOpts` | interface | `{ adMarkers?: string[] }` |
+| `CleanOpts` | interface | `{ adMarkers?: string[]; log?: JsdomWarningSink }` |
+| `JsdomWarningSink` | interface | `{ warn(fields, msg) }` — minimal pino-shaped sink the jsdom warning router needs (tests pass a capturing fake) |
+| `openAttributedDom` | `(html, url, sink = logger) → JSDOM` | JSDOM with a virtual console routing recoverable `jsdomError`s — e.g. "Could not parse CSS stylesheet" — to the RSSify logger WITH the page URL and truncated offending-CSS snippet instead of jsdom's bare `console.error`; non-fatal. Every `new JSDOM` in the app builds through here |
 | `stripImages` | `(html) → string` | Text-only mode: removes `<picture>` wrappers, `<img>`, `<figcaption>` (caption without picture = noise) and now-empty `<figure>`/`<div>` wrappers (regex; used at serve time for `ignore_images`) |
 | `stripPrintBoilerplate` | `(html) → string` | Removes print-header/"An article from" paragraphs, breadcrumbs, footers, nav |
 | `stripAdBlocks` | `(html, markers: string[]) → string` | Removes whole blocks (any of div/section/article/…/p/span/a) whose own text (≤600 chars) contains a marker phrase; length guard protects real bodies |
-| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripAdBlocks`; null when readability finds nothing |
+| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
 | `revealInlineHiddenContent` | `(html) → string` | Parsed-DOM pre-pass: drops `visibility:hidden` (optional `!important`) declarations from element `style` attributes (declaration-boundary exact, so sibling `content-visibility`/`backface-visibility` are untouched). Neutralizes SSR "reveal clamp" containers (e.g. The Paypers Nuxt site) so Readability's `_isProbablyVisible` does not drop the real body before scoring; script bodies, comments, and onclick handlers (text nodes in the DOM) can never be corrupted |
 | `absolutize` | `(html, baseUrl) → string` | Resolves relative `src/href/srcset` to absolute |
 | `textFromHtml` | `(html) → string` | Plain-text extraction (firecrawl-cleaned path) |
@@ -300,7 +302,40 @@ Internal: `SYSTEM_PROMPT` (extraction instructions), `extractJson` (robust
 balanced-brace JSON parsing incl. code fences), `asString`.
 
 Enabled when `defaults.llm_extract` is true **and** an AI key is configured **and**
+Enabled when `defaults.llm_extract` is true **and** an AI key is configured **and**
 the site's `extract.llm` isn't `false`.
+
+---
+
+## 10c. `src/cleanRunner.ts` — worker-bounded cleaning
+
+The synchronous `cleanHtml` runs JSDOM on the caller's thread; jsdom 29 retains
+one window per parse (~35–40x the raw document size) even after `window.close()`
++ GC, so calling it in a loop over many articles grows the main-process heap
+and a whole-backlog `rssify reprocess` OOM-crashed with a core dump at ~4 GB
+(observed on the googlenews reprocess, 2026-09). `cleanHtmlAsync` runs each
+clean on a dedicated worker thread that is terminated and respawned once it has
+handled a bounded byte/item budget, so retained windows — and any in-worker
+crash — die with the worker. Requests are answered in submission order; a wedged
+request is dropped by a watchdog that recycles its worker; a worker is never
+terminated while requests are still in flight on it. The worker is `ref()`ed only
+while in flight, so an idle process can exit. jsdom CSS warnings are posted back
+over the message channel and logged through the CALLER's sink, so site context
+survives the thread hop. Regression tests: `test/clean-runner.test.ts`.
+
+| Export | Signature | Notes |
+|---|---|---|
+| `cleanHtmlAsync` | `(rawHtml, baseUrl, opts?) → Promise<CleanResult \| null>` | Same result as synchronous `cleanHtml`, but on a recycled worker; null when extraction fails, the worker crashed (respawned on the next call), or the request watchdog fired. `log` stays on the caller thread |
+| `cleanRecycleLimits` | const `{ bytes, items, requestTimeoutMs }` | Per-worker budget: 16 MB of processed HTML (keeps retained windows under ~650 MB), 200 items, 120 s watchdog. Mutable for tests (restore in a `finally`) |
+| `cleanRunnerStats` | `() → stats` | Pool counters + current-generation budget (`spawned`/`recycled`/`failed`/`bytesSinceSpawn`/`itemsSinceSpawn`/`workerAlive`) |
+| `resetCleanRunnerForTests` | `() → Promise<void>` | Test seam: drops the worker + counters so each test starts isolated |
+| `currentCleanWorkerForTests` | `() → Worker \| null` | Test seam: live worker handle for crash-shutdown simulation |
+
+Internal (`cleanRunner.ts`): `spawnWorker` (resets the generation budget),
+`scheduleRetirement`/`retireWorker`/`retireIdleWorkers` (recycle only once the
+worker's pending set is empty), `dropPending`, `idleIfNoPending`. The worker
+side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
+`jsdom-warning` bridge messages back to the parent.
 
 ---
 
@@ -342,7 +377,8 @@ the site's `extract.llm` isn't `false`.
 
 1. Normalizes URL/title; reads site config for `ad_markers`.
 2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripAdBlocks`
-   + `textFromHtml`; camofox/plain path → `cleanHtml(raw, url, { adMarkers })`.
+   + `textFromHtml`; camofox/plain path → `cleanHtmlAsync(raw, url, { adMarkers, log })`
+   (worker-threaded, §10c; jsdom CSS warnings attributed to the URL).
 3. **Paywall filter** (before any insert): if `extract.paywall_markers` non-empty
    and the cleaned plain text contains any marker → returns
    `{ inserted: 0, paywalled: true }` (never stored, not counted as failure).
@@ -671,5 +707,9 @@ config.yaml, .env                  # global config + secrets
   `sanitizeSiteConfig`.
 - **Quality self-correction**: generic sites whose body/date extraction rate
   drops below 60% are auto-reprofiled (6 h cooldown).
+- **Cleaning always runs through a worker thread** (`cleanHtmlAsync`, §10c) —
+  the scrape path, `reprocess` and `add` all share it; don't call the
+  synchronous `cleanHtml` on the main thread inside a loop over many articles
+  (jsdom 29's per-window retention OOM-crashed a whole-backlog reprocess).
 - **Site modules must never import backend adapters**; all network access goes
   through the injected `backends` object.

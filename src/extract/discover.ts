@@ -1,4 +1,4 @@
-import { JSDOM } from 'jsdom';
+import { openAttributedDom } from '../clean.ts';
 import { normalizeUrl } from '../util.ts';
 
 /**
@@ -79,7 +79,7 @@ function walk(value: unknown, push: (o: Record<string, unknown>) => void): void 
 
 function collectAnchors(html: string, baseUrl: string): Raw[] {
   try {
-    const dom = new JSDOM(html);
+    const dom = openAttributedDom(html, baseUrl);
     const origin = new URL(baseUrl).origin;
     const out: Raw[] = [];
     for (const a of dom.window.document.querySelectorAll('a[href]')) {
@@ -216,7 +216,7 @@ function pageNumber(u: URL): number | null {
  */
 export function findFollowLinks(html: string, sectionUrl: string, max = 6): FollowLink[] {
   try {
-    const dom = new JSDOM(html);
+    const dom = openAttributedDom(html, sectionUrl);
     const base = new URL(sectionUrl);
     const origin = base.origin;
     const cur = pageNumber(base) ?? 1;

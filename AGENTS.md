@@ -63,6 +63,21 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   already-polluted future `published_at` back to `first_seen` (regression tests in
   tests/feed-date-source.test.ts).
 
+## Cleaning pipeline
+
+- All long-lived cleaning (`persistArticle` scrape path, `rssify reprocess`,
+  `rssify add` snapshots) goes through `cleanHtmlAsync` (src/cleanRunner.ts), a
+  worker thread recycled on a 16 MB / 200-item budget. Reason: jsdom 29 retains
+  ~35–40× the document size per window even after `window.close()` + GC, and a
+  whole-backlog reprocess OOM-crashed the main process at ~4 GB. Never call the
+  synchronous `cleanHtml` (src/clean.ts) in a main-thread loop over many
+  articles; the recycle + defer-retirement contracts are pinned by
+  test/clean-runner.test.ts.
+- jsdom "Could not parse CSS stylesheet" warnings are recoverable (non-fatal)
+  and are attributed with the page URL + css snippet via `openAttributedDom`
+  (src/clean.ts) — they diagnose a broken site stylesheet, not a failed
+  extraction.
+
 ## Extraction quality
 
 - The `bodyGood`/`dateGood` rates in the scrape quality log (`summarizeParseResults`
