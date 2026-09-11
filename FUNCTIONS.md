@@ -21,7 +21,7 @@ without re-reading the whole codebase. Written from the source (verified against
 | Write/extend a site module (`sites/<site>.ts`) | [Scraper-module contract](#6-scraper-module-contract) + [§5 `src/contract.ts`](#5-srccontractts--scraper-module-contract) |
 | Tune per-site extraction (mode, max, follow, ad/paywall, images…) | [Site config_json knobs](#4-site-config_json-knobs) |
 | Fix extraction quality / paywall / ad-box issues | [§11 `persistArticle`](#11-scrape-lifecycle-srcscraperts), [§10 `src/clean.ts`](#10-srccleants--cleaning-metadata-filters), [§10c worker cleaning](#10c-srccleanrunnerts--worker-bounded-cleaning), [reprocess command](#2-cli-commands) |
-| Understand the fetch cascade and engine priority | [§5 `src/engines.ts`](#5-srcenginests--fetch-cascade), [§7 `runSiteScrape`](#7-srcscraperts--scrape-pipeline) |
+| Understand the fetch cascade and engine priority | [§11 `runSiteScrape`](#11-scrape-lifecycle-srcscraperts), [§13 `engine_priority`](#13-global-config-configyaml-env) |
 | Understand junk/gate-body detection | [§10b `src/quality.ts`](#10b-srcqualityts--junk-body-classification) |
 | Skip blacklisted or non-article source URLs | [§10b-2 `src/skip.ts`](#10b-2-srcskipts--source-url-blacklist--non-article-skip-patterns), defaults `url_blacklist` / `skip_url_patterns` |
 | Understand discovery (anchors / embedded JSON / JSON-LD) | [§8 `src/extract/discover.ts`](#8-srcextractdiscoverts--discovery-engine) |
@@ -259,13 +259,13 @@ Internal helpers (not exported): `collectAnchors`, `collectJson`, `usable`,
 |---|---|---|
 | `ParsedMetadata` | interface | `{ title?; author?; publishedAt?; image?; canonical?; ogUrl? }` |
 | `CleanResult` | interface | `{ content: string; text: string }` |
-| `CleanOpts` | interface | `{ adMarkers?: string[]; log?: JsdomWarningSink }` |
+| `CleanOpts` | interface | `{ adMarkers?: string[]; boilerplateMarkers?: string[]; log?: JsdomWarningSink }` |
 | `JsdomWarningSink` | interface | `{ warn(fields, msg) }` — minimal pino-shaped sink the jsdom warning router needs (tests pass a capturing fake) |
 | `openAttributedDom` | `(html, url, sink = logger) → JSDOM` | JSDOM with a virtual console routing recoverable `jsdomError`s — e.g. "Could not parse CSS stylesheet" — to the RSSify logger WITH the page URL and truncated offending-CSS snippet instead of jsdom's bare `console.error`; non-fatal. Every `new JSDOM` in the app builds through here |
 | `stripImages` | `(html) → string` | Text-only mode: removes `<picture>` wrappers, `<img>`, `<figcaption>` (caption without picture = noise) and now-empty `<figure>`/`<div>` wrappers (regex; used at serve time for `ignore_images`) |
 | `stripPrintBoilerplate` | `(html) → string` | Removes print-header/"An article from" paragraphs, breadcrumbs, footers, nav |
 | `stripAdBlocks` | `(html, markers: string[]) → string` | Removes whole blocks (any of div/section/article/…/p/span/a) whose own text (≤600 chars) contains a marker phrase; length guard protects real bodies |
-| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
+| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripBoilerplateBlocks` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
 | `revealInlineHiddenContent` | `(html) → string` | Parsed-DOM pre-pass: drops `visibility:hidden` (optional `!important`) declarations from element `style` attributes (declaration-boundary exact, so sibling `content-visibility`/`backface-visibility` are untouched). Neutralizes SSR "reveal clamp" containers (e.g. The Paypers Nuxt site) so Readability's `_isProbablyVisible` does not drop the real body before scoring; script bodies, comments, and onclick handlers (text nodes in the DOM) can never be corrupted |
 | `absolutize` | `(html, baseUrl) → string` | Resolves relative `src/href/srcset` to absolute |
 | `blockMarkerHit` | `(text, marker) → boolean` | Marker matcher for the block strippers: phrase markers substring-match, single-token markers match on word boundaries (so `advt` never bites into `adventure`) |
@@ -409,9 +409,9 @@ downstream.
 Without a cascade the path is byte-for-byte legacy (including the bot-gate
 firecrawl fallback inside step 2).
 
-1. Normalizes URL/title; reads site config for `ad_markers`.
-2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripAdBlocks`
-   + `textFromHtml`; camofox/plain path → `cleanHtmlAsync(raw, url, { adMarkers,
+1. Normalizes URL/title; reads site config for `ad_markers` + `boilerplateMarkers`.
+2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripBoilerplateBlocks`
+   + `stripAdBlocks` + `textFromHtml`; camofox/plain path → `cleanHtmlAsync(raw, url, { adMarkers,
    boilerplateMarkers, log })` (worker-threaded, §10c; jsdom CSS warnings
    attributed to the URL). Near-empty OR junk-classified cleaned bodies advance
    the cascade (step 2 repeats through `refetch`).
@@ -498,7 +498,7 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Export | Signature | Notes |
 |---|---|---|
 | `CONFIG_PATH`, `ENV_PATH` | consts | `config.yaml`, `.env` at project root |
-| `AppConfig` + sub-interfaces | interfaces | `server`, `backends.{camofox,firecrawl,plain}`, `ai`, `defaults`, `storage` |
+| `AppConfig` + sub-interfaces | interfaces | `server`, `backends.{camofox,firecrawl,plain}`, `defaults`, `storage` |
 | `DEFAULT_CONFIG` | const | See below |
 | `loadEnvFile` | `() → Record<string, string>` | Minimal `.env` parser |
 | `loadConfig` | `() → AppConfig` | deep-merge defaults + disk + env expansion |
@@ -538,7 +538,7 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Export | Signature | Notes |
 |---|---|---|
 | `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
-| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`), part of `ARTICLE_PAGE_CSS` — the shared style source for both article views |
+| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`), part of `ARTICLE_PAGE_CSS` — the shared article-page style source |
 | `neutralizeImgInlineSizing` | `(html) → string` | Strips sizing declarations — `width`/`height` and the logical `inline-size`/`block-size`, each with `min-`/`max-` variants — from `<img>` inline `style` attributes (quote- and paren-aware, `!important` or not), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
 | `storedBodyHtml` | `(doc) → string` | Extracts the verbatim `<body>` inner HTML of a stored cleaned document (the clean pipeline's full-document serialization); fragment-shaped stored files are returned verbatim |
 

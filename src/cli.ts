@@ -948,7 +948,7 @@ program
   .command('config')
   .description('Show or edit configuration (config.yaml + .env).')
   .argument('[action]', "show | set", 'show')
-  .argument('[key]', 'dotted config path, e.g. ai.model')
+  .argument('[key]', 'dotted config path, e.g. defaults.engine_priority')
   .argument('[value]', 'value to set')
   .action(async (action: string, key?: string, value?: string) => {
     ensureConfig();

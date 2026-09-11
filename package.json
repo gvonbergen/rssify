@@ -1,7 +1,7 @@
 {
   "name": "rssify",
   "version": "0.1.0",
-  "description": "Self-hosted scraper-to-RSS: scrape sites, summarize with a cheap AI model, serve RSS 2.0 feeds.",
+  "description": "Self-hosted scraper-to-RSS: scrape sites into cleaned, distraction-free HTML and serve RSS 2.0 feeds.",
   "type": "module",
   "bin": {
     "rssify": "bin/rssify.js"
