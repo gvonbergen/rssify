@@ -113,8 +113,10 @@ When updating this file, preserve this bar for all agents and keep entries conci
   near-empty cleaned bodies advance inside `persistArticle` via the
   `FetchCascade` seam (`{ engines, startIndex, refetch }` in src/contract.ts).
   Picture items are exempt (a photo card never triggers fallback-engine spend).
-- Discovery is NOT cascaded — it stays on the primary engine (plain HTTP by
-  default; Google News feed discovery is hardcoded plain). `persistArticle`
+- Discovery is NOT cascaded and NOT priority-driven — index/listing pages stay
+  on the legacy single `defaults.engine` (the pre-cascade browser default), so
+  JS-rendered listing pages keep their existing engine on upgrade; Google News
+  feed discovery is hardcoded plain HTTP in `sites/googlenews.ts`. `persistArticle`
   without a cascade is byte-for-byte legacy behavior; `engine_priority: []`
   restores exact single-engine behavior.
 - Tests: test/fetch-cascade.test.ts (resolution rules, near-empty advance,

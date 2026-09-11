@@ -291,12 +291,12 @@ test('runSiteScrape: plain-first cascade refetches a near-empty article through 
     const res = await runSiteScrape(db, config, 'example');
     assert.equal(res?.status, 'ok');
     assert.equal(res?.newItems, 1);
-    // Discovery stays on the PRIMARY engine; parse advanced plain → camofox
-    // (firecrawl filtered out — no API key in the default test config).
-    // Dynamic specifier: the module only exists at test runtime.
+    // Discovery stays on the legacy defaults.engine ('firecrawl' in the
+    // default config — the article-page priority list does not steer it);
+    // parse advanced plain → camofox (firecrawl filtered out, no API key).
     const fake = (await import(`../${FAKE_MODULE}`)) as { attempts: string[] };
     assert.deepEqual((fake as { attempts: string[] }).attempts, [
-      'discover:plain',
+      'discover:firecrawl',
       'parse:plain', // near-empty body
       'parse:camofox', // cascade advance → good body
     ]);
@@ -305,6 +305,32 @@ test('runSiteScrape: plain-first cascade refetches a near-empty article through 
     assert.equal(stored[0].title, 'Good title');
   } finally {
     await rm(FAKE_MODULE, { force: true });
+    await removeTempDir(dir);
+  }
+});
+
+test('runSiteScrape: discovery follows legacy defaults.engine, not the plain priority head', async () => {
+  const LEGACY_MODULE = 'sites/fm-cascade-fake-legacy.ts';
+  const dir = await makeTempDir();
+  const { db, config } = openTempDb(dir, { engine: 'camofox' });
+  await writeFile(LEGACY_MODULE, FAKE_SOURCE, 'utf8');
+  try {
+    seedSite(db);
+    db.prepare("UPDATE sites SET module_path='sites/fm-cascade-fake-legacy.ts' WHERE site='example'").run();
+
+    const res = await runSiteScrape(db, config, 'example');
+    assert.equal(res?.status, 'ok');
+    assert.equal(res?.newItems, 1);
+    const fake = (await import(`../${LEGACY_MODULE}`)) as { attempts: string[] };
+    // Legacy engine 'camofox' steers discovery even though the priority head
+    // for article pages is still 'plain'; the article cascade is unchanged.
+    assert.deepEqual((fake as { attempts: string[] }).attempts, [
+      'discover:camofox',
+      'parse:plain', // near-empty body
+      'parse:camofox', // cascade advance → good body
+    ]);
+  } finally {
+    await rm(LEGACY_MODULE, { force: true });
     await removeTempDir(dir);
   }
 });

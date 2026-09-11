@@ -36,7 +36,7 @@ import type {
   ScraperContext,
   SiteScraper,
 } from './contract.ts';
-import { primaryEngine, resolveEnginePriority, filterConfiguredEngines } from './engines.ts';
+import { resolveEnginePriority, filterConfiguredEngines } from './engines.ts';
 
 /** Cache of loaded scraper module instances, keyed by site (with mtime bust). */
 async function loadScraper(site: string, modulePath: string): Promise<SiteScraper> {
@@ -268,8 +268,11 @@ export async function runSiteScrape(
     // Config-driven fetch-cascade order for DESTINATION ARTICLE PAGES: the
     // primary engine fetches first, and on failure (or a near-empty cleaned
     // extraction, advanced inside persistArticle) the next configured engine
-    // takes over. Discovery is NOT cascaded — index/feed listing pages (incl.
-    // Google News feed discovery) stay on the primary engine (plain HTTP).
+    // takes over. Discovery is NOT cascaded and NOT priority-driven — index/
+    // listing pages keep the legacy single `defaults.engine` (the browser
+    // default that pre-dates the cascade), so existing sites whose listing
+    // pages need a rendered browser keep working; Google News feed discovery
+    // is hardcoded plain HTTP in its module.
     const engines = filterConfiguredEngines(resolveEnginePriority(config, siteCfg), config);
     log.info({ engines }, 'fetch cascade: engine priority for article pages');
     if (band.upperMs > 0) {
@@ -318,7 +321,7 @@ export async function runSiteScrape(
       const secLog = siteLogger(site).child({ section: sec.section });
       let candidates: DiscoveredItem[];
       try {
-        const ctx = makeContext(db, site, config, sec.section, engines[0]);
+        const ctx = makeContext(db, site, config, sec.section);
         candidates = await scraper.discover(ctx, backends, {
           section: sec.section,
           indexUrl: sec.index_url,

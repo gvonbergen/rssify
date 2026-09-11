@@ -347,9 +347,9 @@ side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
 0. **fetch cascade order**: `resolveEnginePriority(config, siteCfg)` (per-site
    `extract.enginePriority` → `defaults.engine_priority` → legacy single
    `defaults.engine`), filtered by `filterConfiguredEngines` (firecrawl skipped
-   without an API key; never returns an empty list). Discovery always stays on
-   the primary engine — Google News feed discovery and index pagination are
-   plain HTTP by default.
+   without an API key; never returns an empty list). Discovery is NOT cascaded
+   and NOT priority-driven — it always uses the legacy `defaults.engine`
+   (Google News feed discovery is hardcoded plain HTTP).
 1. **discover** via the site module → candidates (deduped by normalized URL).
 2. **pre-parse skip** (no fetch): listing URLs (paths matching any registered
    section index) and already-known items (sha1 of both slash spellings).
