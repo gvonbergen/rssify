@@ -15,8 +15,8 @@ import { createGenericScraper } from '../src/extract/generic.ts';
  * discover() parses the Atom XML and returns the REAL article URLs Google
  * embeds in each entry's <link> (`url=` query param of the google.com/url
  * redirect). parse() delegates to the generic scraper so the central
- * readability + metadata + LLM extraction pipeline applies to the origin
- * article page unchanged.
+ * readability + metadata pipeline applies to the origin article page
+ * unchanged.
  */
 
 export const site = 'googlenews';

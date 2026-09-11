@@ -21,7 +21,9 @@ without re-reading the whole codebase. Written from the source (verified against
 | Write/extend a site module (`sites/<site>.ts`) | [Scraper-module contract](#6-scraper-module-contract) + [§5 `src/contract.ts`](#5-srccontractts--scraper-module-contract) |
 | Tune per-site extraction (mode, max, follow, ad/paywall, images…) | [Site config_json knobs](#4-site-config_json-knobs) |
 | Fix extraction quality / paywall / ad-box issues | [§11 `persistArticle`](#11-scrape-lifecycle-srcscraperts), [§10 `src/clean.ts`](#10-srccleants--cleaning-metadata-filters), [§10c worker cleaning](#10c-srccleanrunnerts--worker-bounded-cleaning), [reprocess command](#2-cli-commands) |
-| Understand/compare LLM extraction (title/text/link/date) | [§10b `src/extract/llm.ts`](#10b-srcextractllmts--llm-extraction-parallel-path), [§4 `extract.llm`/`feedSource`](#4-site-config_json-knobs) |
+| Understand the fetch cascade and engine priority | [§11 `runSiteScrape`](#11-scrape-lifecycle-srcscraperts), [§13 `engine_priority`](#13-global-config-configyaml-env) |
+| Understand junk/gate-body detection | [§10b `src/quality.ts`](#10b-srcqualityts--junk-body-classification) |
+| Skip blacklisted or non-article source URLs | [§10b-2 `src/skip.ts`](#10b-2-srcskipts--source-url-blacklist--non-article-skip-patterns), defaults `url_blacklist` / `skip_url_patterns` |
 | Understand discovery (anchors / embedded JSON / JSON-LD) | [§8 `src/extract/discover.ts`](#8-srcextractdiscoverts--discovery-engine) |
 | See feed/HTML routes | [HTTP routes](#3-http-routes) |
 | Query the DB | [§12 `src/db.ts`](#12-database-schema-srcdbts) + [schema](#12-database-schema-srcdbts) |
@@ -42,7 +44,6 @@ without re-reading the whole codebase. Written from the source (verified against
 | `src/extract/generic.ts` | Generic scraper used by all `sites/<site>.ts` modules |
 | `src/extract/discover.ts` | Layout-agnostic candidate discovery + follow-link crawling |
 | `src/extract/profile.ts` | Auto-adaptive site profile generation + re-probe |
-| `src/extract/llm.ts` | LLM article extraction (title / full clean text / link / date) — parallel path to tag extraction |
 | `src/contract.ts` | TypeScript contract for scraper modules (`SiteScraper`, `Backends`, …) |
 | `src/db.ts` | SQLite schema + all queries |
 | `src/config.ts` | config.yaml + .env loading, deep-merge, `config set` |
@@ -76,7 +77,7 @@ All commands open the DB via `withDb()` (creates config if missing). Invoke:
 | `scrape <site> [section]` | Manual scrape; `<site>` may be `<site>/<section>`. | `--force` |
 | `serve` | Start HTTP server + scheduler. | `--port`, `--host`, `--all`, `--limit <n>` |
 | `remove <site> [section]` | Unregister site (deletes `sites/<site>.ts` + `.config.json`; keeps `data/` unless `--purge`) or one section. | `--purge` |
-| `delete-article <site> <hash>` | Delete exactly one item plus its cleaned/raw/metadata/LLM artifacts. Copy the full 40-character hash from a listing's `/<site>/item/<hash>` link; site/section state is preserved. | |
+| `delete-article <site> <hash>` | Delete exactly one item plus its cleaned/raw/metadata artifacts (legacy `.llm.json` files are cleaned up too if present). Copy the full 40-character hash from a listing's `/<site>/item/<hash>` link; site/section state is preserved. | |
 | `logs <site>` | Recent scrape runs + tail of `logs/rssify.log` for the site. | `--tail <n>` (default 50) |
 | `config show` | Print merged config (secrets masked). | |
 | `config set <key> <value>` | Set dotted config path; `*api_key*`/`*KEY*` values go to `.env`. | |
@@ -96,15 +97,11 @@ Server built by `createApp(db, config, opts)` (`src/server.ts`), bound by `rssif
 | `GET /<site>/<section>` or `/<site>/<section>.xml` | Section-scoped RSS feed |
 | `GET /<site>/status` | JSON: site + per-section item counts, last scrape |
 | `GET /<site>/item/<hash>` or `/<hash>.html` | Cleaned article rendered through the shared article page shell (breadcrumb → `/feed/<site>/articles` article history, title, source link + date, shared typography/image constraints; body verbatim from `content_path` with inline img sizing neutralized); images stripped instead when `ignore_images` |
-| `GET /<site>/item/<hash>/llm` | LLM-extracted article rendered as HTML through the same shell (from `data/<site>/<hash>.llm.json`); 404 with hint when no sidecar stored |
-| any other | 404 |
+| any other | 404 (the former `/item/<hash>/llm` route was removed with the unused LLM sidecar subsystem) |
 
 Feed item model: `<description>` = full article body text, `<content:encoded>` = full cleaned
 HTML, `<guid isPermaLink="false">` = content hash, `<dc:creator>` = author when present.
-When the site's feed source is `llm` (see [§4 `extract.feedSource`](#4-site-config_json-knobs)),
-`<title>`/`<link>`/`<content:encoded>` come from the stored LLM sidecar
-(falling back to tag fields when absent). `<pubDate>` is **not** overridden —
-the feed and the HTML overview share one database-backed date
+`<pubDate>` and the HTML overview share one database-backed date
 (`published_at ?? first_seen`).
 
 ---
@@ -140,8 +137,9 @@ editing by hand (the CLI commands below update the DB; `remove` deletes the file
 | `ad_markers` | **string[]** | `[]` | Case-insensitive phrases; any cleaned element (≤600 chars) containing one is removed (GlobalData promo boxes etc.). ⚠️ **Must be an ARRAY** — a JSON-string value silently disables stripping (`Array.isArray` guard). |
 | `paywall_markers` | **string[]** | `[]` | Case-insensitive phrases in the **cleaned text**; if any matches, the article is **not stored** (counted as paywall skip). |
 | `storeRaw` | boolean | `defaults.store_raw` | Save `data/<site>/<hash>.raw.html` next to cleaned content |
-| `llm` | boolean | `defaults.llm_extract` | Enable/disable the LLM extraction path for this site (`false` opts out; only effective when an AI key is configured) |
-| `feedSource` | `'tags' \| 'llm'` | `defaults.feed_source` | Which extraction feeds the RSS items for this site — `'llm'` uses the stored sidecar's title/html/link (fallback to tag fields when no sidecar); the date is never taken from the sidecar — both surfaces share `published_at ?? first_seen`. **This instance defaults to `'llm'`** |
+| `urlBlacklist` | **string[]** | `defaults.url_blacklist` | Per-site source-URL blacklist, REPLACES the global list (empty array disables). Host patterns + optional path prefixes. |
+| `skipUrlPatterns` | **string[]** | `defaults.skip_url_patterns` | Per-site non-article wildcard patterns, REPLACES the global list. |
+| `boilerplateMarkers` | **string[]** | `defaults.boilerplate_markers` | Per-site boilerplate-trimming markers, REPLACES the global list (empty array disables trimming). |
 | `enginePriority` | **string[]** | `defaults.engine_priority` | Per-site fetch-cascade order (`src/engines.ts`); valid values `plain`/`camofox`/`firecrawl` |
 
 Example (see `sites/electronicpaymentsinternational.config.json`):
@@ -261,15 +259,18 @@ Internal helpers (not exported): `collectAnchors`, `collectJson`, `usable`,
 |---|---|---|
 | `ParsedMetadata` | interface | `{ title?; author?; publishedAt?; image?; canonical?; ogUrl? }` |
 | `CleanResult` | interface | `{ content: string; text: string }` |
-| `CleanOpts` | interface | `{ adMarkers?: string[]; log?: JsdomWarningSink }` |
+| `CleanOpts` | interface | `{ adMarkers?: string[]; boilerplateMarkers?: string[]; log?: JsdomWarningSink }` |
 | `JsdomWarningSink` | interface | `{ warn(fields, msg) }` — minimal pino-shaped sink the jsdom warning router needs (tests pass a capturing fake) |
 | `openAttributedDom` | `(html, url, sink = logger) → JSDOM` | JSDOM with a virtual console routing recoverable `jsdomError`s — e.g. "Could not parse CSS stylesheet" — to the RSSify logger WITH the page URL and truncated offending-CSS snippet instead of jsdom's bare `console.error`; non-fatal. Every `new JSDOM` in the app builds through here |
 | `stripImages` | `(html) → string` | Text-only mode: removes `<picture>` wrappers, `<img>`, `<figcaption>` (caption without picture = noise) and now-empty `<figure>`/`<div>` wrappers (regex; used at serve time for `ignore_images`) |
 | `stripPrintBoilerplate` | `(html) → string` | Removes print-header/"An article from" paragraphs, breadcrumbs, footers, nav |
 | `stripAdBlocks` | `(html, markers: string[]) → string` | Removes whole blocks (any of div/section/article/…/p/span/a) whose own text (≤600 chars) contains a marker phrase; length guard protects real bodies |
-| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
+| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripBoilerplateBlocks` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
 | `revealInlineHiddenContent` | `(html) → string` | Parsed-DOM pre-pass: drops `visibility:hidden` (optional `!important`) declarations from element `style` attributes (declaration-boundary exact, so sibling `content-visibility`/`backface-visibility` are untouched). Neutralizes SSR "reveal clamp" containers (e.g. The Paypers Nuxt site) so Readability's `_isProbablyVisible` does not drop the real body before scoring; script bodies, comments, and onclick handlers (text nodes in the DOM) can never be corrupted |
 | `absolutize` | `(html, baseUrl) → string` | Resolves relative `src/href/srcset` to absolute |
+| `blockMarkerHit` | `(text, marker) → boolean` | Marker matcher for the block strippers: phrase markers substring-match, single-token markers match on word boundaries (so `advt` never bites into `adventure`) |
+| `stripBoilerplateBlocks` | `(html, markers) → string` | Removes short (< 600 chars, < half the document text) boilerplate blocks matching `defaults.boilerplate_markers` / `extract.boilerplateMarkers` — consent banners, "Preferred Sources" widgets, "Advt" labels, app promos, © footer plates, related-content tails; long article text is never touched |
+| `withHeroImage` | `(content, imageUrl, baseUrl) → string` | Restores the source-declared hero (og:image/JSON-LD) as a `<figure>` right after `<body>` when the cleaned article has no in-body image; http(s) URLs only, relative URLs absolutized; fragments get the figure prepended |
 | `textFromHtml` | `(html) → string` | Plain-text extraction (firecrawl-cleaned path) |
 | `extractMetadata` | `(rawHtml, url) → ParsedMetadata` | JSON-LD (prefers Article/NewsArticle/BlogPosting over BreadcrumbList) → OG/Twitter → `<time>` → visible-text date fallback; canonical + og:url |
 
@@ -277,34 +278,46 @@ Internal: `first`, `unwrapJsonLd`, `authorFromJsonLd`, `imageFromJsonLd`.
 
 ---
 
-## 10b. `src/extract/llm.ts` — LLM extraction (parallel path)
+## 10b. `src/quality.ts` — junk-body classification
 
-Runs **in parallel** with the tag-based extractor on every new article: the model
-reads the page URL, the head metadata, and the already-cleaned article content
-(readability / firecrawl) and returns the four RSS fields — headline, **the full
-article body reproduced VERBATIM as clean HTML** (word-for-word, formatting
-preserved, no ads/nav/cookie banners/paywall stubs/comments/boilerplate),
-canonical URL, and ISO publication date — as JSON. The result is persisted to
-`data/<site>/<hash>.llm.json` (fields `title`, `html`, `text`, `url`,
-`publishedAt`, `model`, `extractedAt`) so the feed and the `/item/<hash>/llm`
-route serve it without re-calling the model. Model output is sanitized
-(`sanitizeArticleHtml`) before storage; older sidecars that only carry plain
-`text` are rendered via `textToHtml` as a fallback. Removing the feature later =
-drop this module, the call in `persistArticle`, the route/link, and the
-`llm_extract` / `feed_source` / `extract_max_tokens` knobs; the tag path is
-untouched.
+`looksLikeJunkBody(text, content?) → { junk: boolean; reason: string | null }`
+classifies a cleaned article body as junk when it is really a gate/error/
+consent/offer/footer response, not an article. Marker tiers (verified against
+the 2026-09 audit fixtures):
 
-| Export | Signature | Notes |
-|---|---|---|
-| `LlmExtraction` | interface | `{ title: string\|null; html: string; text: string; url: string\|null; publishedAt: string\|null; model: string; extractedAt: number }` |
-| `buildLlmExtractor` | `(config) → (rawHtml, url, text?, html?) → Promise<LlmExtraction \| null>` | OpenAI-compatible client (same `ai.*` config); 60 s timeout; input truncated to `ai.max_input_chars`; output capped at `ai.extract_max_tokens`; **best-effort — never throws**, null on any failure (tag fields stand). Plain mode first (JSON `response_format` retried only when the plain response is unusable — reasoning models burn their whole budget in JSON mode); tolerant key mapping + markdown-artifact stripping |
+- **Gate markers** (unconditional): JS-required notices, YouTube playback
+  errors, "page is unavailable", "Reference Error ID".
+- **Structure-thin**: < 60 words and no substantial paragraph (nav/ticker
+  fragments).
+- **Subscription offers**: two distinct offer markers, or one marker in a
+  < 150-word body.
+- **Consent bodies**: a consent marker whose TAIL dominates (> 40% of a
+  < 600-word body).
+- **Footer plates**: ©/rights/copyright/disclosure marker in the first 120
+  chars of a < 150-word body.
 
-Internal: `SYSTEM_PROMPT` (extraction instructions), `extractJson` (robust
-balanced-brace JSON parsing incl. code fences), `asString`.
+Detection is marker/structure only — source-similarity is deliberately NOT a
+signal (aggregators rewrite/translate article text; faithful captures can
+legitimately fail containment). The verdict only steers the fetch cascade
+(see `persistArticle`); content is never silently dropped.
 
-Enabled when `defaults.llm_extract` is true **and** an AI key is configured **and**
-Enabled when `defaults.llm_extract` is true **and** an AI key is configured **and**
-the site's `extract.llm` isn't `false`.
+---
+
+## 10b-2. `src/skip.ts` — source-URL blacklist + non-article skip patterns
+
+| Export | Notes |
+|---|---|
+| `DEFAULT_URL_BLACKLIST` | `['youtube.com', 'youtu.be']` — YouTube is excluded from ingestion by default |
+| `resolveUrlBlacklist(config, siteCfg)` | Per-site `extract.urlBlacklist` REPLACES `defaults.url_blacklist` (empty array disables) |
+| `resolveSkipUrlPatterns(config, siteCfg)` | Per-site `extract.skipUrlPatterns` REPLACES `defaults.skip_url_patterns` |
+| `matchesBlacklistEntry(url, entry)` | Host-suffix match (host == entry or subdomain); optional `host/path` prefix narrows to that path |
+| `matchUrlBlacklist(url, entries)` | First matching entry or null |
+| `matchesSkipPattern(url, pattern)` | Wildcard pattern (`*` = any run) against `<host><pathname>`; bare-host patterns match subdomains too |
+| `matchSkipPatterns(url, patterns)` | First matching pattern or null |
+
+Enforcement: `runSiteScrape` filters candidates BEFORE any fetch (logged with
+the matched entry/pattern); `persistArticle` re-checks the resolved canonical
+URL so redirects/canonical drift into blacklisted hosts are never stored.
 
 ---
 
@@ -382,22 +395,26 @@ side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
 
 ### `persistArticle`
 
-`(db, config, site, section, cand, article, llmExtractor, backends, log, cascade?, usedEngineIndex?) → { inserted; bodyGood; dateGood; paywalled?; pictureItem? }`
+`(db, config, site, section, cand, article, backends, log, cascade?, usedEngineIndex?) → { inserted; bodyGood; dateGood; paywalled?; pictureItem?; blacklisted? }`
 
 `cascade?: FetchCascade` (`{ engines, startIndex, refetch }` from
 `src/contract.ts`) enables the quality-triggered fetch cascade: when cleaning
-fails or the cleaned text is near-empty (below `MIN_QUALITY_BODY` and NOT a
-picture item — a photo card is legitimate content), the next engine in
-`cascade.engines` is re-fetched via `refetch` and the attempt repeats; the
-last attempt is stored (flagged weak) when the list is exhausted, and the
-winning attempt feeds title/date/metadata/LLM downstream.
+fails or the cleaned text is near-empty OR junk-classified
+(`looksLikeJunkBody`: gate/error/consent/offer/footer bodies, below
+`MIN_QUALITY_BODY` and NOT a picture item — a photo card is legitimate
+content), the next engine in `cascade.engines` is re-fetched via `refetch`
+and the attempt repeats; the last attempt is stored (flagged weak) when the
+list is exhausted, and the winning attempt feeds title/date/metadata
+downstream.
 Without a cascade the path is byte-for-byte legacy (including the bot-gate
 firecrawl fallback inside step 2).
 
-1. Normalizes URL/title; reads site config for `ad_markers`.
-2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripAdBlocks`
-   + `textFromHtml`; camofox/plain path → `cleanHtmlAsync(raw, url, { adMarkers, log })`
-   (worker-threaded, §10c; jsdom CSS warnings attributed to the URL).
+1. Normalizes URL/title; reads site config for `ad_markers` + `boilerplateMarkers`.
+2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripBoilerplateBlocks`
+   + `stripAdBlocks` + `textFromHtml`; camofox/plain path → `cleanHtmlAsync(raw, url, { adMarkers,
+   boilerplateMarkers, log })` (worker-threaded, §10c; jsdom CSS warnings
+   attributed to the URL). Near-empty OR junk-classified cleaned bodies advance
+   the cascade (step 2 repeats through `refetch`).
 3. **Paywall filter** (before any insert): if `extract.paywall_markers` non-empty
    and the cleaned plain text contains any marker → returns
    `{ inserted: 0, paywalled: true }` (never stored, not counted as failure).
@@ -406,12 +423,12 @@ firecrawl fallback inside step 2).
    re-checks dedup (slash-insensitive) → `addItemSection` if known.
 6. Writes `data/<site>/<hash>.html` (+ `.raw.html` when `storeRaw`,
    + `.meta.json` when author/image/metadata present).
-7. **LLM extraction** (when `llmExtractor` non-null, i.e. enabled + key configured):
-   runs on the raw page HTML, best-effort, and writes `data/<site>/<hash>.llm.json`
-   (title/text/url/publishedAt/model/extractedAt). Only runs for NEW items —
-   dedup and paywall skips never burn model credits. Failure logs a warning;
-   the item still saves with tag fields.
-8. `insertItem` (UNIQUE race → duplicate, not failure) + `addItemSection`.
+7. **og:image hero recovery**: when the cleaned article has no in-body image
+   but the source declares og:image/JSON-LD image, `withHeroImage` injects a
+   hero figure (http(s) URLs only) right after `<body>`.
+8. **Blacklist/pattern re-check** on the resolved canonical URL: a match
+   returns `{ inserted: 0, blacklisted: true }` — never stored, not a failure.
+9. `insertItem` (UNIQUE race → duplicate, not failure) + `addItemSection`.
 
 ### Other internals
 
@@ -474,14 +491,14 @@ Row interfaces: `SiteRow`, `SectionRow`, `ItemRow`, `RunRow`, `ScrapeQuality`.
 
 Loaded by `src/config.ts`; `DEFAULT_CONFIG` deep-merged with on-disk YAML,
 then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
-(`AI_API_KEY`, `FIRECRAWL_API_KEY`, `CAMOFOX_ACCESS_KEY`).
+(`FIRECRAWL_API_KEY`, `CAMOFOX_ACCESS_KEY`).
 
 ### `src/config.ts` exports
 
 | Export | Signature | Notes |
 |---|---|---|
 | `CONFIG_PATH`, `ENV_PATH` | consts | `config.yaml`, `.env` at project root |
-| `AppConfig` + sub-interfaces | interfaces | `server`, `backends.{camofox,firecrawl,plain}`, `ai`, `defaults`, `storage` |
+| `AppConfig` + sub-interfaces | interfaces | `server`, `backends.{camofox,firecrawl,plain}`, `defaults`, `storage` |
 | `DEFAULT_CONFIG` | const | See below |
 | `loadEnvFile` | `() → Record<string, string>` | Minimal `.env` parser |
 | `loadConfig` | `() → AppConfig` | deep-merge defaults + disk + env expansion |
@@ -508,8 +525,9 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | `ignore_images` | false | `config_json.ignore_images` |
 | `schedule_jitter_seconds` | 1800 | none |
 | `store_raw` | true | `config_json.extract.storeRaw` |
-| `llm_extract` | true | `config_json.extract.llm` (set `false` to opt a site out) |
-| `feed_source` | `'llm'` (this instance) | `config_json.extract.feedSource` (`'tags'` switches a site back to tag fields) |
+| `url_blacklist` | `['youtube.com','youtu.be']` | `config_json.extract.urlBlacklist` REPLACES the list (empty array disables) |
+| `skip_url_patterns` | `[]` | `config_json.extract.skipUrlPatterns` REPLACES the list |
+| `boilerplate_markers` | audit-derived list (see `config.example.yaml`) | `config_json.extract.boilerplateMarkers` REPLACES the list |
 
 `storage`: `data_dir: ./data`, `db_path: ./data/state.sqlite`, `keep_content_forever: true`.
 
@@ -520,35 +538,32 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Export | Signature | Notes |
 |---|---|---|
 | `createApp` | `(db, config, opts?: { feedLimit?: number }) → Hono` | Single catch-all route; see [HTTP routes](#3-http-routes). `feedLimit 0` = every stored RSS article; HTML index uses `defaults.website_item_limit` independently |
-| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`), part of `ARTICLE_PAGE_CSS` — the shared style source for both article views |
+| `ARTICLE_IMAGE_CSS` | constant | Reader constraint for article images (`article img { max-width:100% !important; height:auto !important }`), part of `ARTICLE_PAGE_CSS` — the shared article-page style source |
 | `neutralizeImgInlineSizing` | `(html) → string` | Strips sizing declarations — `width`/`height` and the logical `inline-size`/`block-size`, each with `min-`/`max-` variants — from `<img>` inline `style` attributes (quote- and paren-aware, `!important` or not), preserving unrelated declarations verbatim — inline `!important` sizing would otherwise outrank the reader CSS |
 | `storedBodyHtml` | `(doc) → string` | Extracts the verbatim `<body>` inner HTML of a stored cleaned document (the clean pipeline's full-document serialization); fragment-shaped stored files are returned verbatim |
 
 Internal: `resolvePath`, `readContent`, `esc`/`fmt` (shared HTML escape + date
 format), `ignoreImagesFor` (per-site `ignore_images` → else global; applied at
-serve time), `feedSourceFor` (per-site `extract.feedSource` → else
-`defaults.feed_source`), `readLlmSidecar` (loads `data/<site>/<hash>.llm.json`),
+serve time),
 `siteItemHref` (ONLY internal item-link builder: percent-encodes the site
 segment so a literal `%` in a site name survives browser URL parsing and the
 route's `decodeURIComponent` — the single rule shared by the breadcrumb and
 every article-row link),
 `articleItemHtml` (shared article-list row for `/` and `/feed/<site>/articles`:
-`Title · cleaned · LLMextraction · original` — title ALWAYS opens the cleaned
-article view (`/<site>/item/<hash>`), never the LLM view, the external URL or
-plain text; the `LLMextraction` slot (only when a stored sidecar exists) opens
-`/<site>/item/<hash>/llm` as a secondary destination; `original` opens the
+`Title · cleaned · original` — title ALWAYS opens the cleaned
+article view (`/<site>/item/<hash>`), never the external URL or
+plain text; `original` opens the
 canonical external scraped-source URL and is omitted when none exists), `siteFeedHtml`,
 `siteStatus`, `stripExt`, `serveRss`, `rootPageHtml` (fixed concise overview;
 "Show more articles" links to the dedicated page),
 `feedArticlesPageHtml` (dedicated `/feed/<site>/articles` page: identifies the
 feed, back link to the index, bounded progressive `limit`/`offset` paging),
-`breadcrumbHtml` (shared article-view breadcrumb: `← site · cleaned ·
-LLMextraction` — the site name opens the HTML article history at
+`breadcrumbHtml` (article-view breadcrumb: `← site · cleaned` — the site name
+opens the HTML article history at
 `/feed/<site>/articles`, never the RSS XML endpoint; every href percent-encodes
 the site segment via the same `siteItemHref` rule) and
-`articlePageHtml` (shared shell rendering BOTH article views — cleaned and
-LLM — with one CSS source, `ARTICLE_PAGE_CSS`, so they cannot drift; only
-content, metadata and breadcrumb state differ per view).
+`articlePageHtml` (the article page shell — one CSS source,
+`ARTICLE_PAGE_CSS`).
 Exported limit helpers: `normalizeWebsiteItemLimit` safely falls back and caps
 website article limits at 1000; `DEFAULT_WEBSITE_ITEM_LIMIT` and
 `MAX_WEBSITE_ITEM_LIMIT` expose those bounds.
@@ -689,7 +704,7 @@ data/state.sqlite                  # SQLite registry + items
 data/<site>/<hash>.html            # cleaned main-content HTML (served as article content)
 data/<site>/<hash>.raw.html        # raw page HTML (defaults.store_raw) — reprocess source
 data/<site>/<hash>.meta.json       # optional { author?, bylineImage?, metadata? }
-data/<site>/<hash>.llm.json        # LLM extraction sidecar (defaults.llm_extract): { title?, html, text, url?, publishedAt?, model, extractedAt } — verbatim body as sanitized HTML; serves /item/<hash>/llm + feedSource=llm
+data/<site>/<hash>.llm.json        # LEGACY LLM-extraction sidecar (subsystem removed) — still cleaned up by delete-article
 data/_add_snapshot_*.html          # temporary snapshots during `rssify add` (deleted after)
 logs/rssify.log                    # pino JSON logs
 sites/<site>.ts, .config.json      # scraper module + sidecar config
@@ -720,9 +735,9 @@ config.yaml, .env                  # global config + secrets
   effect immediately without re-scraping (strips `<picture>` + `<img>` from
   feeds and item pages).
 - **Reprocess re-cleans from saved raw HTML** — run it after changing cleaning
-  rules/ad markers so stored items pick up the fix without re-scraping. It does
-  NOT apply the paywall filter and does not re-run LLM extraction for items that
-  already have a sidecar.
+  rules/ad/boilerplate markers so stored items pick up the fix without
+  re-scraping. It does NOT apply the paywall filter (per-site opt-in), but it
+  mirrors the scrape-time og:image hero recovery.
 - **Engine priority is global** (`defaults.engine_priority`, falling back to the
   single `defaults.engine`) for article pages; per-site
   `config_json.extract.enginePriority` replaces the whole cascade order. Legacy

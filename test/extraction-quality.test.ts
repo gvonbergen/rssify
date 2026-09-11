@@ -107,7 +107,7 @@ test('persistArticle scores the CryptoQuant quicktake as a good text article —
     const res = await persistArticle(
       db, config, 'example', 'news', { url },
       { url, title: '', html: cqFixture() },
-      null, backends, noopLogger,
+      backends, noopLogger,
     );
     assert.equal(res.inserted, 1);
     assert.equal(res.bodyGood, true);
@@ -146,7 +146,7 @@ test('persistArticle stores a picture item normally and flags it for the quality
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: rcFixture() },
-      null, backends, noopLogger,
+      backends, noopLogger,
     );
     // Inserted and stored like any feed item — but flagged, not scored.
     assert.equal(res.inserted, 1);
@@ -185,7 +185,7 @@ test('persistArticle routes a DataDome interstitial to the firecrawl bot-gate fa
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: 'Reuters item', html: datadomeFixture() },
-      null, backends, noopLogger,
+      backends, noopLogger,
     );
     assert.equal(res.inserted, 1);
     assert.equal(res.bodyGood, true);
@@ -209,7 +209,7 @@ test('persistArticle bot-gate fallback surfaces a distinct error when firecrawl 
       persistArticle(
         db, config, 'example', 'news', cand,
         { url: cand.url, title: 'Reuters item', html: datadomeFixture() },
-        null, backends, noopLogger,
+        backends, noopLogger,
       ),
       /firecrawl fallback returned no html/,
     );

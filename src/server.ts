@@ -15,7 +15,7 @@ import {
   type ItemRow,
 } from './db.ts';
 import { buildRss, ttlFromSchedule, type FeedItem, type FeedMeta } from './rss.ts';
-import { stripImages, sanitizeArticleHtml, textToHtml, textFromHtml } from './clean.ts';
+import { stripImages, textFromHtml } from './clean.ts';
 
 export const DEFAULT_WEBSITE_ITEM_LIMIT = 10;
 /** Hard cap for one HTML index response, including progressive expansions. */
@@ -23,8 +23,8 @@ export const MAX_WEBSITE_ITEM_LIMIT = 1000;
 const MAX_WEBSITE_OFFSET = 1_000_000_000;
 
 /**
- * Reader-side constraint for article-body images, shared by both rendered
- * article views (`cleaned` and `llm`). Images fit the article column, stay
+ * Reader-side constraint for article-body images on the rendered cleaned
+ * article view. Images fit the article column, stay
  * responsive at desktop and mobile widths, preserve their aspect ratio, and
  * can never create horizontal overflow. Scoped to <article> so app chrome,
  * index pages and RSS XML (readers apply their own CSS) are untouched.
@@ -54,9 +54,9 @@ const PAGE_SHELL_CSS = `body {
 }`;
 
 /**
- * Post-level presentation for the rendered article views (`cleaned` and
- * `llm`): typography, metadata line, link colors and the article-image
- * constraint, all in one shared source so the two views cannot drift.
+ * Post-level presentation for the rendered cleaned article view:
+ * typography, metadata line, link colors and the article-image
+ * constraint, all in one shared source.
  * Articles are rendered inside an <article> element (see `articlePageHtml`),
  * which is what the image constraint is scoped to.
  */
@@ -351,72 +351,24 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     return typeof cfg.ignore_images === 'boolean' ? cfg.ignore_images : config.defaults.ignore_images;
   };
 
-  // Which extraction path feeds the RSS items for a site: 'tags' (readability
-  // + structured metadata) or 'llm' (AI-extracted fields, falling back to tag
-  // fields when no sidecar is stored). Per-site config_json extract.feedSource
-  // wins, else defaults.feed_source.
-  const feedSourceFor = (site: string): 'tags' | 'llm' => {
-    const row = getSite(db, site);
-    let cfg: Record<string, unknown> = {};
-    try {
-      cfg = JSON.parse(row?.config_json ?? '{}');
-    } catch {
-      cfg = {};
-    }
-    const ext = (cfg['extract'] ?? {}) as Record<string, unknown>;
-    if (ext['feedSource'] === 'llm' || ext['feedSource'] === 'tags') return ext['feedSource'];
-    return config.defaults.feed_source;
-  };
-
-  /** The persisted LLM-extraction sidecar (data/<site>/<hash>.llm.json). */
-  interface LlmSidecar {
-    title?: string | null;
-    /** Verbatim article body as clean (sanitized) HTML. */
-    html?: string;
-    /** Plain-text body (older sidecars / fallback). */
-    text?: string;
-    url?: string | null;
-    publishedAt?: string | null;
-    model?: string;
-    extractedAt?: number;
-  }
-  const readLlmSidecar = (site: string, hash: string): LlmSidecar | null => {
-    const p = resolvePath(join(config.storage.data_dir, site, `${hash}.llm.json`));
-    try {
-      if (!existsSync(p)) return null;
-      const parsed = JSON.parse(readFileSync(p, 'utf8'));
-      return parsed && typeof parsed === 'object' ? (parsed as LlmSidecar) : null;
-    } catch {
-      return null;
-    }
-  };
-
-  /** Shared article-list row: `Title · cleaned · LLMextraction · original`.
-   *  - Title ALWAYS opens the stored cleaned article view
-   *    (`/<site>/item/<hash>`) on every list surface — never the LLM view,
-   *    the external site, or plain text, whether or not a sidecar exists.
-   *  - `cleaned` keeps opening the stored cleaned article view.
-   *  - `LLMextraction` (only when a stored LLM sidecar exists) opens the LLM
-   *    extraction view — reachable without the title pointing at it.
-   *  - `original` opens the canonical external scraped-source URL (the LLM
-   *    sidecar's canonical pick wins, else the stored source URL — the same
-   *    resolution the LLM page and the feed use); omitted when no such URL
-   *    exists. */
-  const articleItemHtml = (site: string, it: ItemRow, llm: LlmSidecar | null): string => {
+  // Shared article-list row: `Title · cleaned · original`.
+  //  - Title ALWAYS opens the stored cleaned article view
+  //    (`/<site>/item/<hash>`) on every list surface — never the external
+  //    site, or plain text.
+  //  - `cleaned` opens the stored cleaned article view.
+  //  - `original` opens the stored canonical scraped-source URL; omitted
+  //    when no such URL exists. */
+  const articleItemHtml = (site: string, it: ItemRow): string => {
     const cleanHref = siteItemHref(site, it.hash);
-    const llmHref = `${cleanHref}/llm`;
-    const canonicalUrl = llm?.url || it.url || '';
+    const canonicalUrl = it.url || '';
     const titleHref = cleanHref;
     const original = canonicalUrl
       ? `<span class="muted">· <a class="original" href="${esc(canonicalUrl)}" target="_blank" rel="noopener">original</a></span>`
       : '';
-    const llmLink = llm
-      ? `<span class="muted">· <a class="llm" href="${esc(llmHref)}">LLMextraction</a></span>`
-      : '';
     return `<li class="item">
       <span class="date">${esc(fmt(it.published_at ?? it.first_seen))}</span>
       <a class="title" href="${esc(titleHref)}">${esc(it.title || '(untitled)')}</a>
-      <span class="muted">· <a class="cleaned" href="${esc(cleanHref)}">cleaned</a></span>${llmLink}${original}
+      <span class="muted">· <a class="cleaned" href="${esc(cleanHref)}">cleaned</a></span>${original}
     </li>`;
   };
 
@@ -426,39 +378,14 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
     const limit = opts.feedLimit === 0 ? 1_000_000_000 : opts.feedLimit ?? config.defaults.feed_item_limit;
     const items = recentItems(db, site, section, limit);
     const strip = ignoreImagesFor(site);
-    const feedSource = feedSourceFor(site);
     const rows = items
       .map((it) => {
         const content = readContent(it.content_path);
-        // Tag-based fields are the default; when the site's feedSource is
-        // 'llm' the stored LLM sidecar overrides title/link/content (falling
-        // back to tag fields where the sidecar has nothing). The date is
-        // deliberately NOT overridden: the feed and the HTML overview share
-        // one database-backed date (published_at ?? first_seen), so a
-        // hallucinated sidecar publishedAt can never diverge the surfaces or
-        // drift a feed's sort order (the item list is ordered by that same
-        // value in recentItems).
-        let title: string = it.title;
-        let link: string = it.url;
-        let pubDate: number = it.published_at ?? it.first_seen;
-        let contentHtml: string | null = content ? (strip ? stripImages(content) : content) : null;
-        let description: string | null = content ? textFromHtml(content) : null;
-        if (feedSource === 'llm') {
-          const llm = readLlmSidecar(site, it.hash);
-          if (llm) {
-            if (llm.title) title = llm.title;
-            if (llm.url) link = llm.url;
-            // Verbatim HTML body (sanitized again at serve time); older
-            // sidecars carry plain text → convert defensively. Respect the
-            // site's ignore_images setting like the tag path does.
-            const llmHtml = llm.html
-              ? sanitizeArticleHtml(llm.html)
-              : textToHtml(llm.text ?? '');
-            if (llmHtml) contentHtml = strip ? stripImages(llmHtml) : llmHtml;
-            // <description> = full body text (verbatim when the sidecar has it).
-            description = llm.text || (llmHtml ? textFromHtml(llmHtml) : null);
-          }
-        }
+        const title: string = it.title;
+        const link: string = it.url;
+        const pubDate: number = it.published_at ?? it.first_seen;
+        const contentHtml: string | null = content ? (strip ? stripImages(content) : content) : null;
+        const description: string | null = content ? textFromHtml(content) : null;
         return {
           title,
           link,
@@ -571,7 +498,7 @@ export function createApp(db: Db, config: AppConfig, opts: { feedLimit?: number 
         })
         .join('');
       const itemRows = items
-        .map((it) => articleItemHtml(s.site, it, readLlmSidecar(s.site, it.hash)))
+        .map((it) => articleItemHtml(s.site, it))
         .join('');
       let moreLink = '';
       if (hasMore) {
@@ -636,7 +563,7 @@ ${blocks}
     const siteTitle = s.title || site;
 
     const itemRows = items
-      .map((it) => articleItemHtml(site, it, readLlmSidecar(site, it.hash)))
+      .map((it) => articleItemHtml(site, it))
       .join('');
 
     let rangeNote = '';
@@ -687,62 +614,46 @@ ${moreLink}
 </body></html>`;
   }
 
-  /** Shared breadcrumb/nav row for both rendered article views: `← site ·
-   *  cleaned · LLMextraction`. The site-name link goes to the feed's HTML
-   *  article history (`/feed/<site>/articles`, site name URL-encoded) — NOT
-   *  to the RSS XML endpoint (`/<site>`), which an RSS reader would open as
-   *  a subscription. Links are root-relative, so they work unchanged behind
-   *  a configured public/base URL. The site segment is percent-encoded in
+  /** Shared breadcrumb/nav row for the rendered cleaned article view:
+   *  `← site · cleaned`. The site-name link goes to the feed's HTML article
+   *  history (`/feed/<site>/articles`, site name URL-encoded) — NOT to the
+   *  RSS XML endpoint (`/<site>`), which an RSS reader would open as a
+   *  subscription. Links are root-relative, so they work unchanged behind a
+   *  configured public/base URL. The site segment is percent-encoded in
    *  every href (a literal `%` in a site name would otherwise be re-decoded
-   *  by the browser and 404). The current view is plain text; the other
-   *  view is a link when reachable (the LLM view needs a stored sidecar). */
-  const breadcrumbHtml = (site: string, it: ItemRow, view: 'cleaned' | 'llm', hasLlm: boolean): string => {
-    const itemBase = siteItemHref(site, esc(it.hash));
-    const parts = [
-      `<a href="/feed/${encodeURIComponent(site)}/articles">← ${esc(site)}</a>`,
-      view === 'cleaned' ? 'cleaned' : `<a href="${itemBase}">cleaned</a>`,
-      view === 'llm' || !hasLlm ? 'LLMextraction' : `<a href="${itemBase}/llm">LLMextraction</a>`,
-    ];
-    return parts.join(' · ');
-  };
+   *  by the browser and 404). The current view is plain text. */
+  const breadcrumbHtml = (site: string): string =>
+    `<a href="/feed/${encodeURIComponent(site)}/articles">← ${esc(site)}</a> · cleaned`;
 
-  /** Shared page shell for the two rendered article views (`cleaned` at
-   *  /<site>/item/<hash> and `llm` at /<site>/item/<hash>/llm). One template
-   *  + one CSS source (ARTICLE_PAGE_CSS) so the views cannot drift apart;
-   *  only the content, metadata and breadcrumb state differ per view. `body`
-   *  is the view's article HTML (already neutralized of hostile inline img
-   *  sizing); it is placed inside <article> so ARTICLE_IMAGE_CSS constrains
-   *  every image to the reading column on both views. */
+  /** Page shell for the rendered cleaned article view (/site/item/<hash>).
+   *  One template + one CSS source (ARTICLE_PAGE_CSS); `body` is the
+   *  article HTML (already neutralized of hostile inline img sizing); it is
+   *  placed inside <article> so ARTICLE_IMAGE_CSS constrains every image to
+   *  the reading column. */
   function articlePageHtml(args: {
     site: string;
     it: ItemRow;
-    view: 'cleaned' | 'llm';
     title: string;
     link: string;
     dateTs: number;
-    model: string | null;
     body: string;
-    hasLlm: boolean;
   }): string {
-    const { site, it, view, title, link, dateTs, model, body, hasLlm } = args;
+    const { site, it, title, link, dateTs, body } = args;
     const meta = [
       link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : '',
       esc(fmt(dateTs)),
-      model ? `model: ${esc(model)}` : '',
     ].filter(Boolean).join(' · ');
-    const empty = view === 'cleaned'
-      ? '<p class="muted">(no stored article content)</p>'
-      : '<p class="muted">(no article text extracted — paywalled or unparseable)</p>';
+    const empty = '<p class="muted">(no stored article content)</p>';
     return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — ${view === 'cleaned' ? 'cleaned' : 'LLM extraction'}</title>
+<title>${esc(title)} — cleaned</title>
 <style>
 ${ARTICLE_PAGE_CSS}
 </style>
 </head><body>
-<p class="muted">${breadcrumbHtml(site, it, view, hasLlm)}</p>
+<p class="muted">${breadcrumbHtml(site)}</p>
 <h1>${esc(title)}</h1>
 <p class="meta">${meta}</p>
 <article>${body || empty}</article>
@@ -815,21 +726,18 @@ ${ARTICLE_PAGE_CSS}
         const doc = readContent(it.content_path);
         if (doc === null) return c.text('content missing', 404);
         // The stored cleaned document is rendered through the shared article
-        // page shell (same presentation as the LLM view; distinct content).
-        // Text-only mode (ignore_images) has no images left to constrain.
+        // page shell. Text-only mode (ignore_images) has no images left to
+        // constrain.
         let body = storedBodyHtml(doc);
         if (ignoreImagesFor(site)) body = stripImages(body);
         return c.html(
           articlePageHtml({
             site,
             it,
-            view: 'cleaned',
             title: it.title || '(untitled)',
             link: it.url,
             dateTs: it.published_at ?? it.first_seen,
-            model: null,
             body: neutralizeImgInlineSizing(body),
-            hasLlm: readLlmSidecar(site, hash) !== null,
           }),
         );
       }
@@ -841,33 +749,9 @@ ${ARTICLE_PAGE_CSS}
       if (!getSite(db, site)) return c.text('not found', 404);
       const [second, third, fourth] = [segments[1], segments[2], segments[3]];
       if (second === 'item' && fourth === 'llm') {
-        const hash = plainSite(third);
-        const it = getItem(db, site, hash);
-        if (!it) return c.text('not found', 404);
-        const llm = readLlmSidecar(site, hash);
-        if (!llm) {
-          return c.text(
-            `no LLM extraction stored for this item — re-scrape the site or run \`rssify reprocess ${site}\` to generate it`,
-            404,
-          );
-        }
-        return c.html(
-          articlePageHtml({
-            site,
-            it,
-            view: 'llm',
-            title: llm.title || it.title || '(untitled)',
-            link: llm.url || it.url,
-            dateTs: llm.publishedAt && Number.isFinite(Date.parse(llm.publishedAt))
-              ? Date.parse(llm.publishedAt)
-              : it.published_at ?? it.first_seen,
-            model: llm.model ?? null,
-            body: llm.html
-              ? neutralizeImgInlineSizing(sanitizeArticleHtml(llm.html))
-              : textToHtml(llm.text ?? ''),
-            hasLlm: true,
-          }),
-        );
+        // The LLM extraction view was removed with the unused LLM sidecar
+        // subsystem (0/150 sidecars existed; nothing referenced it).
+        return c.text('not found', 404);
       }
       return c.text('not found', 404);
     }

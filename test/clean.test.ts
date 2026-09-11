@@ -6,37 +6,12 @@ import {
   absolutize,
   cleanHtml,
   extractMetadata,
-  sanitizeArticleHtml,
   stripAdBlocks,
   stripImages,
   stripPrintBoilerplate,
   textFromHtml,
-  textToHtml,
   revealInlineHiddenContent,
 } from '../src/clean.ts';
-
-test('textToHtml escapes model text and makes deterministic paragraphs', () => {
-  assert.equal(
-    textToHtml('Hello <script>alert(1)</script>\nworld\n\nSecond & final.'),
-    '<p>Hello &lt;script&gt;alert(1)&lt;/script&gt; world</p>\n<p>Second &amp; final.</p>',
-  );
-  assert.equal(textToHtml('  \n\n  '), '');
-});
-
-test('sanitizeArticleHtml removes executable content and unsafe URLs', () => {
-  const cleaned = sanitizeArticleHtml(`
-    <article onclick="alert(1)">
-      <script>alert(1)</script><style>body{display:none}</style>
-      <p>safe</p><a href="javascript:alert(1)" onmouseover="x">bad link</a>
-      <img src="data:image/png;base64,abc"><img src="https://cdn.test/a.png">
-      <iframe src="https://evil.test"></iframe><svg><path /></svg>
-    </article>`);
-  assert.match(cleaned, /<p>safe<\/p>/);
-  assert.match(cleaned, /bad link/);
-  assert.match(cleaned, /<img src="https:\/\/cdn\.test\/a\.png">/);
-  assert.doesNotMatch(cleaned, /script|style|iframe|svg|onclick|onmouseover|data:image|javascript:/i);
-  assert.doesNotMatch(cleaned, /href=/);
-});
 
 test('image stripping removes image wrappers but preserves non-image content', () => {
   const html = '<div><figure><picture><source srcset="x"><img src="x"></picture><figcaption>Caption</figcaption></figure></div><p>keep</p><figure><table><tr><td>table</td></tr></table></figure>';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApp, neutralizeImgInlineSizing, storedBodyHtml } from '../src/server.ts';
 import { addItemSection, insertItem } from '../src/db.ts';
@@ -103,7 +103,7 @@ test('HTTP routing rejects unknown paths/methods and applies feed limits and pub
   }
 });
 
-test('cleaned and LLM article pages constrain oversized article images to the reading column', async () => {
+test('cleaned article pages constrain oversized article images to the reading column', async () => {
   const dir = await makeTempDir();
   const { db, config } = openTempDb(dir);
   try {
@@ -111,35 +111,6 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     // Faithful to the real reproduction: article artwork is a 1920px-wide PNG
     // with no width/height attributes, which previously rendered at natural
     // size and overflowed the 50rem reading column (and the viewport).
-    const llmDir = join(dir, 'data', 'example');
-    await mkdir(llmDir, { recursive: true });
-    await writeFile(
-      join(llmDir, 'hash-1.llm.json'),
-      JSON.stringify({
-        title: 'Wide image article',
-        html: '<p><img src="https://images.cryptorank.io/articles/wide.png" fetchpriority="high" alt="artwork"></p>'
-          + '<p><img src="https://cdn.test/inline.png" width="1920" height="1118" style="width:1920px;height:1118px;max-width:none"></p>'
-          + '<p><img src="https://cdn.test/hostile.png" style=\'width:1920px !important;min-width:900px;aspect-ratio:16/9;border:2px solid #333\' alt="hostile"></p>'
-          + '<p><img alt="a>b" class="art" src="https://cdn.test/gt.png" style="min-width:800px;height:500px !important;aspect-ratio:4/3"></p>'
-          + '<p><img data-x=" style= " src="https://cdn.test/shielded.png" style="width:900px !important;aspect-ratio:1"></p>'
-          + '<p><img src="https://cdn.test/decoy.png" style="background:url(\'a;width:10px\');border:1px;width:5px"></p>'
-          // An unbalanced quote character inside the style value (ordinary
-          // markup: an apostrophe in a font name or in an unquoted url())
-          // must not shield the following hostile declarations.
-          + '<p><img src="https://cdn.test/apos.png" style="font-family:O\'Reilly;width:1920px !important;aspect-ratio:3/2"></p>'
-          + '<p><img src="https://cdn.test/urlapos.png" style="background:url(don\'t.png);width:1920px !important"></p>'
-          + '<p><img src="https://cdn.test/commented.png" style="width/*x*/:1200px !important;border:2px dotted red" alt="commented"></p>'
-          + '<p><img src="https://cdn.test/commented-min.png" style="min-/*x*/width:700px;aspect-ratio:16/9" alt="commented-min"></p>'
-          + '<p><img src="https://cdn.test/escaped.png" style="w\\69 dth:1920px !important;aspect-ratio:2/1" alt="escaped"></p>'
-          + '<p><img src="https://cdn.test/logical.png" style="inline-size:1200px !important;min-block-size:500px" alt="logical"></p>'
-          + '<p>Article body text.</p>',
-        url: 'https://example.test/news/a',
-        publishedAt: null,
-        model: 'test-model',
-        extractedAt: 1_700_000_000_500,
-      }),
-      'utf8',
-    );
     const contentPath = join(dir, 'hash-1.html');
     // Store article content shaped like the clean pipeline's full-document
     // serialization (the real stored files begin with <html><head><body>).
@@ -167,55 +138,12 @@ test('cleaned and LLM article pages constrain oversized article images to the re
     insertItem(db, itemRow('example', 'hash-1', contentPath));
 
     const app = createApp(db, config);
-    const llm = await app.request('http://internal.test/example/item/hash-1/llm');
-    assert.equal(llm.status, 200);
-    const llmHtml = await llm.text();
-    // Both imgs render inside the article; width/height attributes and
-    // unrelated inline declarations stay verbatim but hostile inline sizing
-    // declarations (which could outrank the reader constraint via !important
-    // or clamp max-width via min-width) are stripped at the serve boundary,
-    // so only the reader constraint controls image sizing.
-    assert.match(llmHtml, /<article>/);
-    assert.match(llmHtml, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/inline\.png" width="1920" height="1118">/);
-    assert.doesNotMatch(llmHtml, /width:1920px|min-width|max-width:none/);
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/hostile\.png" style="aspect-ratio:16\/9;border:2px solid #333" alt="hostile">/);
-    // A raw '>' inside a quoted attribute value must not shield the style
-    // attribute from the neutralizer.
-    assert.match(llmHtml, /<img alt="a>b" class="art" src="https:\/\/cdn\.test\/gt\.png" style="aspect-ratio:4\/3">/);
-    // A `style=` token inside an EARLIER attribute's quoted value must not be
-    // mistaken for the style attribute (hostile !important width survives).
-    assert.match(llmHtml, /<img data-x=" style= " src="https:\/\/cdn\.test\/shielded\.png" style="aspect-ratio:1">/);
-    // Semicolons inside quoted url() values are not declaration separators:
-    // width-like fragments there must never corrupt unrelated declarations.
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/decoy\.png" style="background:url\('a;width:10px'\);border:1px">/);
-    // An unbalanced apostrophe in the style value must not poison the
-    // declaration splitting: the hostile width that follows is still stripped
-    // and the unrelated declarations stay byte-for-byte.
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/apos\.png" style="font-family:O'Reilly;aspect-ratio:3\/2">/);
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/urlapos\.png" style="background:url\(don't\.png\)">/);
-    assert.doesNotMatch(llmHtml, /width:900px|width:5px/);
-    // CSS comments spliced into sizing properties must not let the sizing
-    // declaration slip past (browsers tokenize the comment away): both the
-    // plain and min-width variants are removed, unrelated borders kept.
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented\.png" style="border:2px dotted red" alt="commented">/);
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/commented-min\.png" style="aspect-ratio:16\/9" alt="commented-min">/);
-    // CSS escape sequences inside property names are decoded by the browser's
-    // tokenizer (`\69 ` is `i`), so escape-camouflaged sizing must be
-    // detected and removed just like comment-camouflaged sizing.
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/escaped\.png" style="aspect-ratio:2\/1" alt="escaped">/);
-    // Logical sizing properties (inline-size/block-size, which map to
-    // width/height in horizontal writing modes) are stripped too.
-    assert.match(llmHtml, /<img src="https:\/\/cdn\.test\/logical\.png" alt="logical">/);
-    assert.doesNotMatch(llmHtml, /1200px|700px|500px/);
-    assert.match(llmHtml, /article img\s*\{\s*max-width:\s*100%\s*!important;\s*height:\s*auto\s*!important;\s*\}/);
-
     const cleaned = await app.request('http://internal.test/example/item/hash-1');
+
     assert.equal(cleaned.status, 200);
     const cleanedHtml = await cleaned.text();
-    // The cleaned view renders through the shared article page shell: same
-    // shell/typography/media constraints as the LLM view (asserted in
-    // tests/article-pages.test.ts), with the stored cleaned markup kept
+    // The cleaned view renders through the shared article page shell: the
+    // stored cleaned markup is kept
     // verbatim inside <article> and hostile inline sizing neutralized.
     assert.match(cleanedHtml, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
     assert.match(cleanedHtml, /<article><p>Cleaned body<\/p>/);

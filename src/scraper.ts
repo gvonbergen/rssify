@@ -19,10 +19,10 @@ import {
   type ScrapeQuality,
 } from './db.ts';
 import type { AppConfig } from './config.ts';
+import { resolveBoilerplateMarkers } from './config.ts';
 import { buildBackends } from './backends/index.ts';
 export { buildBackends };
-import { buildLlmExtractor } from './extract/llm.ts';
-import { absolutize, extractMetadata, stripAdBlocks, textFromHtml } from './clean.ts';
+import { absolutize, extractMetadata, stripAdBlocks, stripBoilerplateBlocks, textFromHtml, withHeroImage } from './clean.ts';
 import { cleanHtmlAsync } from './cleanRunner.ts';
 import { load } from 'cheerio';
 import { normalizeUrl, sha1, nowMs } from './util.ts';
@@ -37,6 +37,13 @@ import type {
   SiteScraper,
 } from './contract.ts';
 import { resolveEnginePriority, filterConfiguredEngines } from './engines.ts';
+import { looksLikeJunkBody } from './quality.ts';
+import {
+  matchSkipPatterns,
+  matchUrlBlacklist,
+  resolveSkipUrlPatterns,
+  resolveUrlBlacklist,
+} from './skip.ts';
 
 /** Cache of loaded scraper module instances, keyed by site (with mtime bust). */
 async function loadScraper(site: string, modulePath: string): Promise<SiteScraper> {
@@ -275,6 +282,14 @@ export async function runSiteScrape(
     // is hardcoded plain HTTP in its module.
     const engines = filterConfiguredEngines(resolveEnginePriority(config, siteCfg), config);
     log.info({ engines }, 'fetch cascade: engine priority for article pages');
+    // Configurable source-URL skip rules (checked BEFORE any fetch):
+    //  - url_blacklist — host-pattern skip list (YouTube by default);
+    //  - skip_url_patterns — narrow non-article destination filter.
+    // Both are logged with the matched entry/pattern so the skip semantics
+    // are observable, and are overridable per site (extract.urlBlacklist /
+    // extract.skipUrlPatterns replace the global lists).
+    const urlBlacklist = resolveUrlBlacklist(config, siteCfg);
+    const skipPatterns = resolveSkipUrlPatterns(config, siteCfg);
     if (band.upperMs > 0) {
       log.info(
         { site, lowerMs: band.lowerMs, upperMs: band.upperMs },
@@ -282,22 +297,6 @@ export async function runSiteScrape(
       );
     }
     const backends: Backends = withRateLimit(buildBackends(config, log), band, site, log);
-
-    // LLM article extraction runs IN PARALLEL with the tag-based path (both
-    // produce fields for every new article; the feed picks one via
-    // feed_source). Enabled unless the global switch is off, the site opts
-    // out via `extract.llm: false`, or no API key is configured.
-    const siteExtractCfg = (siteCfg['extract'] ?? {}) as Record<string, unknown>;
-    const llmExtractEnabled =
-      config.defaults.llm_extract && Boolean(config.ai.api_key) && siteExtractCfg['llm'] !== false;
-    const llmExtractor = llmExtractEnabled ? buildLlmExtractor(config) : null;
-    if (llmExtractEnabled) {
-      log.info('llm extract: enabled (parallel with tag extraction)');
-    } else {
-      log.info(config.ai.api_key
-        ? 'llm extract: disabled (defaults.llm_extract=false or site extract.llm=false)'
-        : 'llm extract: disabled — no AI api key configured');
-    }
 
     const sections = section
       ? [getSection(db, site, section)].filter((x): x is NonNullable<typeof x> => !!x)
@@ -348,6 +347,8 @@ export async function runSiteScrape(
       const fresh: { cand: DiscoveredItem; i: number }[] = [];
       let skippedKnown = 0;
       let skippedListing = 0;
+      let skippedBlacklisted = 0;
+      let skippedFiltered = 0;
       // Safety net on top of discovery's per-section isListing(): a URL whose
       // pathname matches ANY registered section index of this site (same or
       // another section, incl. ?page= variants) is a listing page — it must
@@ -367,6 +368,21 @@ export async function runSiteScrape(
             skippedListing++;
             return;
           }
+          // Blacklist + non-article pattern filter run BEFORE the dedupe scan
+          // and before any fetch: a blacklisted YouTube watch page or a
+          // quote/chart destination must never spend engine credits.
+          const blEntry = matchUrlBlacklist(cand.url, urlBlacklist);
+          if (blEntry) {
+            skippedBlacklisted++;
+            secLog.info({ url: cand.url, entry: blEntry }, 'blacklisted source URL — skipped before fetch');
+            return;
+          }
+          const skipPattern = matchSkipPatterns(cand.url, skipPatterns);
+          if (skipPattern) {
+            skippedFiltered++;
+            secLog.info({ url: cand.url, pattern: skipPattern }, 'non-article URL pattern — skipped before fetch');
+            return;
+          }
           // Slash-insensitive: sites sometimes link the same article with and
           // without a trailing slash — either form counts as known. Both
           // spellings are checked: a listing may link "/slug" while the
@@ -381,8 +397,11 @@ export async function runSiteScrape(
         }
         fresh.push({ cand, i });
       });
-      if (skippedKnown > 0 || skippedListing > 0) {
-        secLog.info({ skippedKnown, skippedListing, total: candidates.length }, 'parse: skipping already-known or listing candidates');
+      if (skippedKnown > 0 || skippedListing > 0 || skippedBlacklisted > 0 || skippedFiltered > 0) {
+        secLog.info(
+          { skippedKnown, skippedListing, skippedBlacklisted, skippedFiltered, total: candidates.length },
+          'parse: skipping already-known, listing, blacklisted or non-article candidates',
+        );
       }
       const indexed = fresh.map(({ cand, i }) => ({ cand, i }));
       const results = await mapLimit(indexed, config.defaults.scrape_concurrency, async ({ cand, i }) => {
@@ -434,7 +453,6 @@ export async function runSiteScrape(
                   sec.section,
                   cand,
                   fbArticle,
-                  llmExtractor,
                   backends,
                   secLog,
                   undefined,
@@ -479,15 +497,20 @@ export async function runSiteScrape(
             sec.section,
             cand,
             article,
-            llmExtractor,
             backends,
             secLog,
             cascade,
             usedIdx,
           );
           secLog.info(
-            { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
-            res.paywalled ? 'parse: paywall — skipped' : res.inserted ? 'parse: ok — new item' : 'parse: duplicate — skipped',
+            { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, blacklisted: !!res.blacklisted, ms: Date.now() - t0 },
+            res.blacklisted
+              ? 'parse: blacklisted/non-article canonical URL — skipped'
+              : res.paywalled
+                ? 'parse: paywall — skipped'
+                : res.inserted
+                  ? 'parse: ok — new item'
+                  : 'parse: duplicate — skipped',
           );
           return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
         } catch (e) {
@@ -630,7 +653,6 @@ export async function persistArticle(
   section: string,
   cand: DiscoveredItem,
   article: Article,
-  llmExtractor: ReturnType<typeof buildLlmExtractor> | null,
   backends: Backends,
   log: Logger,
   /** Fetch-cascade seam (quality-triggered engine fallback): when the cleaned
@@ -640,7 +662,7 @@ export async function persistArticle(
   cascade?: FetchCascade,
   /** Index into cascade.engines of the engine that produced `article`. */
   usedEngineIndex?: number,
-): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean; pictureItem?: boolean }> {
+): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean; pictureItem?: boolean; blacklisted?: boolean }> {
   if (!article || typeof article.html !== 'string' || !article.html) {
     throw new Error('parse returned empty article (no html)');
   }
@@ -660,6 +682,7 @@ export async function persistArticle(
   const adMarkers = Array.isArray(adExtract['ad_markers'])
     ? (adExtract['ad_markers'] as unknown[]).map(String)
     : [];
+  const boilerplateMarkers = resolveBoilerplateMarkers(config, adSiteCfg);
 
   // --- cleaning + metadata (centralized), with quality-triggered engine
   //     fallback (fetch cascade part 2) ---
@@ -685,12 +708,13 @@ export async function persistArticle(
     if (attempt.cleaned === true) {
       // firecrawl path: html already cleaned; metadata comes via Article.metadata
       aContent = absolutizeBody(attempt.html, attempt.url);
+      if (boilerplateMarkers.length) {
+        aContent = stripBoilerplateBlocks(aContent, boilerplateMarkers);
+      }
       if (adMarkers.length) {
         aContent = stripAdBlocks(aContent, adMarkers);
-        aText = textFromHtml(aContent);
-      } else {
-        aText = textFromHtml(attempt.html);
       }
+      aText = textFromHtml(aContent);
       aMeta = firecrawlMetadata(attempt.metadata);
       ok = true;
     } else {
@@ -698,7 +722,7 @@ export async function persistArticle(
       // (worker-threaded cleaner: jsdom 29's per-window retention leak is
       // recycled away by cleanHtmlAsync instead of accumulating in this
       // process)
-      const cleaned = await cleanHtmlAsync(attempt.html, attempt.url, { adMarkers, log });
+      const cleaned = await cleanHtmlAsync(attempt.html, attempt.url, { adMarkers, boilerplateMarkers, log });
       if (cleaned) {
         aContent = cleaned.content;
         aText = cleaned.text;
@@ -710,12 +734,21 @@ export async function persistArticle(
     }
 
     const canAdvance = cascade !== undefined && engineIdx + 1 < cascade.engines.length;
+    // Picture-item classification is shared by the near-empty and junk
+    // triggers: a caption + image card is legitimate content, never a reason
+    // to burn fallback-engine credits.
+    const picture = looksLikePictureItem(aContent, aText);
     if (ok) {
-      // Near-empty trigger: a successful extraction whose text sits below the
-      // good-body threshold. Picture items are exempt (see above).
+      // Quality triggers on a SUCCESSFUL extraction, either of:
+      //  - near-empty: text below the good-body threshold, or
+      //  - junk: a marker/structure-classified gate/error/consent/offer/footer
+      //    body (src/quality.ts) — substantial-length responses such as the
+      //    FT subscription-offer wall (1,385 words) or the Moneycontrol
+      //    consent form that no word count alone can catch.
+      // Picture items are exempt from both.
       const nearEmpty =
-        aText.trim().length < MIN_QUALITY_BODY &&
-        !looksLikePictureItem(aContent, aText);
+        (aText.trim().length < MIN_QUALITY_BODY || looksLikeJunkBody(aText, aContent).junk) &&
+        !picture;
       if (!nearEmpty || !canAdvance) {
         content = aContent;
         text = aText;
@@ -742,12 +775,13 @@ export async function persistArticle(
         }
         log.info({ url: attempt.url }, 'bot-gated page — firecrawl fallback used');
         content = absolutizeBody(r.html, attempt.url);
+        if (boilerplateMarkers.length) {
+          content = stripBoilerplateBlocks(content, boilerplateMarkers);
+        }
         if (adMarkers.length) {
           content = stripAdBlocks(content, adMarkers);
-          text = textFromHtml(content);
-        } else {
-          text = textFromHtml(r.html);
         }
+        text = textFromHtml(content);
         meta = firecrawlMetadata(r.metadata);
         break;
       }
@@ -757,8 +791,13 @@ export async function persistArticle(
     // Advance: re-fetch the page through the next configured engine.
     engineIdx += 1;
     const nextEngine = cascade!.engines[engineIdx];
+    const junkReason = looksLikeJunkBody(aText, aContent).reason;
     log.info(
-      { url: attempt.url, engine: nextEngine, reason: ok ? 'near-empty extraction' : 'extraction failed' },
+      {
+        url: attempt.url,
+        engine: nextEngine,
+        reason: !ok ? 'extraction failed' : junkReason ?? 'near-empty extraction',
+      },
       `fetch cascade: advancing to '${nextEngine}'`,
     );
     try {
@@ -778,7 +817,7 @@ export async function persistArticle(
   }
 
   // The winning attempt is the content source: its title/date/metadata (and
-  // raw html for LLM extraction) must feed every downstream step, not the
+  // raw html for reprocessing) must feed every downstream step, not the
   // primary engine's discarded attempt.
   article = attempt;
 
@@ -837,6 +876,30 @@ export async function persistArticle(
   const hs = sha1SlashInsensitive(canonical);
   const hash = hs[0];
 
+  // Blacklist re-check on the RESOLVED canonical URL: a redirect or canonical
+  // link can land the stored article on a blacklisted host (e.g. a publisher
+  // canonicalizing into youtube.com). The candidate URL was already filtered
+  // before the fetch; this is the defense for canonical drift.
+  {
+    const siteCfgRow = getSite(db, site);
+    let skipSiteCfg: Record<string, unknown> = {};
+    try {
+      skipSiteCfg = JSON.parse(siteCfgRow?.config_json ?? '{}');
+    } catch {
+      skipSiteCfg = {};
+    }
+    const blEntry = matchUrlBlacklist(canonical, resolveUrlBlacklist(config, skipSiteCfg));
+    if (blEntry) {
+      log.info({ url: canonical, entry: blEntry }, 'canonical URL is blacklisted — not persisted');
+      return { inserted: 0, bodyGood: false, dateGood: false, blacklisted: true };
+    }
+    const skipPattern = matchSkipPatterns(canonical, resolveSkipUrlPatterns(config, skipSiteCfg));
+    if (skipPattern) {
+      log.info({ url: canonical, pattern: skipPattern }, 'canonical URL matches a non-article pattern — not persisted');
+      return { inserted: 0, bodyGood: false, dateGood: false, blacklisted: true };
+    }
+  }
+
   if (itemBelongsToSite(db, site, hash)) {
     // Already known (possibly under another section) → just add membership.
     addItemSection(db, site, section, hash);
@@ -847,6 +910,13 @@ export async function persistArticle(
     addItemSection(db, site, section, hs[1]);
     return { inserted: 0, bodyGood: false, dateGood: false };
   }
+
+  // --- og:image hero recovery: when the cleaned article has no in-body
+  // image but the source declares one (og:image / JSON-LD image), restore it
+  // as a hero figure. Only http(s) URLs are ever injected (the same safety
+  // rule the sanitizer applies to stored images); text-only feeds strip it
+  // again at serve time. ---
+  content = withHeroImage(content, meta.image, article.url);
 
   // --- persist content file ---
   const dataDir = resolve(ROOT, config.storage.data_dir, site);
@@ -886,49 +956,6 @@ export async function persistArticle(
     if (bylineImage) sidecar['bylineImage'] = bylineImage;
     if (otherMeta(meta)) sidecar['metadata'] = otherMeta(meta);
     writeFileSync(join(dataDir, `${hash}.meta.json`), JSON.stringify(sidecar, null, 2), 'utf8');
-  }
-
-  // --- LLM extraction (parallel path, best-effort) ---
-  // Runs only for NEW items (after the dedup + paywall filters above, so
-  // duplicates never burn model credits). The result is persisted to a
-  // sidecar (`data/<site>/<hash>.llm.json`) which the feed and the
-  // `/item/<hash>/llm` route serve without re-calling the model. A failure
-  // is logged and the item still saves with the tag-based fields.
-  if (llmExtractor) {
-    try {
-      // `content` (cleaned HTML) + `text` are the tag-path output — the LLM
-      // gets structured article content + head metadata instead of truncated
-      // raw HTML, so it can reproduce the body VERBATIM with formatting and
-      // the body is never cut off by max_input_chars.
-      const llm = await llmExtractor(article.html, article.url, text, content);
-      if (llm) {
-        writeFileSync(
-          join(dataDir, `${hash}.llm.json`),
-          JSON.stringify(
-            {
-              title: llm.title,
-              html: llm.html,
-              text: llm.text,
-              url: llm.url,
-              publishedAt: llm.publishedAt,
-              model: llm.model,
-              extractedAt: llm.extractedAt,
-            },
-            null,
-            2,
-          ),
-          'utf8',
-        );
-        siteLogger(site).info(
-          { url: article.url, hasText: llm.text.length > 0, hasDate: !!llm.publishedAt, model: llm.model },
-          'llm extract: ok — sidecar saved',
-        );
-      } else {
-        siteLogger(site).warn({ url: article.url }, 'llm extract: returned nothing usable — tag fields stand');
-      }
-    } catch (e) {
-      siteLogger(site).error({ url: article.url, err: String(e) }, 'llm extract failed');
-    }
   }
 
   // --- insert row + membership ---

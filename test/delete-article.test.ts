@@ -28,7 +28,7 @@ async function responseText(app: ReturnType<typeof createApp>, path: string): Pr
 
 test('deleteStoredArticle removes one article from DB, feeds, routes, and only its own artifacts', async () => {
   const dir = await makeTempDir();
-  const { db, config } = openTempDb(dir, { feed_source: 'llm' });
+  const { db, config } = openTempDb(dir);
   try {
     seedSite(db);
     insertSection(db, sectionRow('example', 'other'));
@@ -63,7 +63,6 @@ test('deleteStoredArticle removes one article from DB, feeds, routes, and only i
     const app = createApp(db, config, { feedLimit: 0 });
     assert.match((await responseText(app, '/example')).text, new RegExp(TARGET_HASH));
     assert.equal((await responseText(app, `/example/item/${TARGET_HASH}`)).status, 200);
-    assert.equal((await responseText(app, `/example/item/${TARGET_HASH}/llm`)).status, 200);
 
     const result = deleteStoredArticle(db, config, 'example', TARGET_HASH);
     assert.deepEqual(result, {
@@ -98,7 +97,8 @@ test('deleteStoredArticle removes one article from DB, feeds, routes, and only i
     assert.equal((await responseText(app, `/example/item/${TARGET_HASH}.html`)).status, 404);
     assert.equal((await responseText(app, `/example/item/${TARGET_HASH}/llm`)).status, 404);
     assert.equal((await responseText(app, `/example/item/${SIBLING_HASH}`)).status, 200);
-    assert.equal((await responseText(app, `/example/item/${SIBLING_HASH}/llm`)).status, 200);
+    // The removed /llm route 404s regardless of any legacy sidecar files.
+    assert.equal((await responseText(app, `/example/item/${SIBLING_HASH}/llm`)).status, 404);
   } finally {
     db.close();
     await removeTempDir(dir);

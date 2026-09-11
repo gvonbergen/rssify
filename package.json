@@ -1,7 +1,7 @@
 {
   "name": "rssify",
   "version": "0.1.0",
-  "description": "Self-hosted scraper-to-RSS: scrape sites, summarize with a cheap AI model, serve RSS 2.0 feeds.",
+  "description": "Self-hosted scraper-to-RSS: scrape sites into cleaned, distraction-free HTML and serve RSS 2.0 feeds.",
   "type": "module",
   "bin": {
     "rssify": "bin/rssify.js"
@@ -24,7 +24,6 @@
     "hono": "^4.13.1",
     "jsdom": "^29.1.1",
     "node-cron": "^4.6.0",
-    "openai": "^7.4.0",
     "pino": "^10.3.1",
     "yaml": "^2.9.0"
   },

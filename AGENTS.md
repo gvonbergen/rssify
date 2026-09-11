@@ -7,11 +7,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Article rendering
 
-- Both rendered article views — `/site/item/<hash>` (cleaned) and
-  `/site/item/<hash>/llm` — render through ONE shared page shell
-  (`articlePageHtml` + `ARTICLE_PAGE_CSS` in `src/server.ts`); only the
-  content, metadata and breadcrumb state differ per view. New
-  article-adjacent pages must reuse that shell instead of copying CSS.
+- The rendered article view `/site/item/<hash>` (cleaned) renders through ONE
+  shared page shell (`articlePageHtml` + `ARTICLE_PAGE_CSS` in
+  `src/server.ts`). New article-adjacent pages must reuse that shell instead
+  of copying CSS. (The former `/item/<hash>/llm` view was removed with the
+  unused LLM-sidecar subsystem — that route now 404s.)
 - Article images must stay inside the reading column. The defenses live in
   `src/server.ts`: `ARTICLE_IMAGE_CSS` (the `<article>`-scoped rule in
   `ARTICLE_PAGE_CSS`) and `neutralizeImgInlineSizing()` (strips hostile
@@ -26,16 +26,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   an RSS reader would open as a subscription.
 - On every article list surface (`/` and `/feed/<site>/articles`, one shared
   `articleItemHtml` row in `src/server.ts`) the title link ALWAYS opens the
-  cleaned article view `/site/item/<hash>` — never `/llm`, never the external
-  `original` URL, never plain text. The LLM view stays reachable through the
-  row's sidecar-only `LLMextraction` slot; `original` keeps its `target=_blank`
-  external link. Don't regress the title to any other target.
+  cleaned article view `/site/item/<hash>` — never the external `original`
+  URL, never plain text. `original` keeps its `target=_blank` external link.
+  Don't regress the title to any other target.
 - Every internal article link percent-encodes its site segment through ONE
-  rule (`siteItemHref` in `src/server.ts`) — the breadcrumb's feed-history and
-  sibling cleaned/LLM links AND the article-row `cleaned`/title/LLM links on
-  `/` and `/feed/<site>/articles`. A literal `%`+hex in a site name (e.g.
+  rule (`siteItemHref` in `src/server.ts`) — the breadcrumb's feed-history
+  link AND the article-row `cleaned`/title links on `/` and
+  `/feed/<site>/articles`. A literal `%`+hex in a site name (e.g.
   `pct%20name`) keeps that encoding in the href, or the browser re-decodes it
-  and the item/LLM routes 404. Never hand-build an internal item href.
+  and the item route 404s. Never hand-build an internal item href.
 - Every HTML page (main index, `/feed/<site>/articles`, article views)
   shares one container contract: `PAGE_SHELL_CSS` (50rem max width, 1rem
   gutters). Don't introduce a page with its own body geometry.
@@ -43,20 +42,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`<html><head>…<body>…`) with no `<article>` wrapper — readability keeps
   `<div id="readability-page-1">`. The serve path extracts the verbatim
   `<body>` content (`storedBodyHtml()`) and the shell places it inside
-  `<article>`, so the `<article>`-scoped image rule applies to both views
+  `<article>`, so the `<article>`-scoped image rule applies
   without touching stored data.
+- og:image hero recovery: `withHeroImage` (src/clean.ts) injects the
+  source-declared hero image right after `<body>` when the cleaned article
+  has no in-body image (http(s) only); `rssify reprocess` mirrors it.
+  Text-only feeds (`ignore_images`) strip it at serve time — don't skip
+  storing the hero for text-only sites.
 
 ## Article dates
 
 - The RSS feed and the HTML overview (main index and `/feed/<site>/articles`)
   must derive every article's date from ONE database-backed value:
   `published_at ?? first_seen` (ordering in `recentItems`, rendering in
-  `articleItemHtml`/`siteFeedHtml`, all in `src/server.ts`). `feedSource`
-  `'llm'` sidecars override title/link/content in the feed but NOT the date —
-  a hallucinated sidecar `publishedAt` would drift the feed's dates/order
-  away from the overview (future dates bubble to the top of readers). The
-  sidecar `publishedAt` is only displayed on the single-article `/llm` page
-  and is never persisted into `published_at` (not even by `rssify reprocess`, src/cli.ts).
+  `articleItemHtml`/`siteFeedHtml`, all in `src/server.ts`).
   `published_at` must never be more than a day after `first_seen`: `choosePublishedDate`
   (src/extract/generic.ts) clamps at scrape time, and `rssify reprocess` (src/cli.ts)
   mirrors that clamp (never writes an implausible future page date) and heals an
@@ -95,6 +94,35 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   legitimately embed marker strings (Cloudflare `challenge-platform`,
   `js.datadome.co` scripts), so a marker match on raw HTML is not itself a
   false-positive signal — the fixtures in `test/fixtures/` pin this behavior.
+
+## Ingest guards (junk gate, blacklist, boilerplate, hero)
+
+- Junk-body classification (`looksLikeJunkBody`, src/quality.ts) extends the
+  cascade's quality trigger beyond the near-empty word-count rule: JS gates,
+  playback errors, consent-dominated bodies, © footer plates,
+  subscription-offer walls and nav-only fragments advance to the next engine
+  too. Marker/structure ONLY — never gate persistence on source-similarity
+  (two sampled aggregators rewrite/translate article text; faithful captures
+  can legitimately fail containment). Picture items are exempt; without a
+  cascade persistArticle is byte-for-byte legacy (junk still stored, flagged).
+- Source-URL skip rules (src/skip.ts): `defaults.url_blacklist`
+  (YouTube — youtube.com + youtu.be — excluded from ingestion by default;
+  host-suffix matching incl. subdomains, optional path prefixes) and
+  `defaults.skip_url_patterns` (narrow non-article URL shapes). Checked
+  BEFORE any fetch in runSiteScrape and re-checked on the resolved canonical
+  URL in persistArticle; every skip logs the matched entry/pattern. Per-site
+  `extract.urlBlacklist` / `extract.skipUrlPatterns` REPLACE the global
+  lists (empty array disables). Do not solve YouTube with a specialized
+  extractor — the requested mechanism is the blacklist.
+- Boilerplate trimming (`stripBoilerplateBlocks`, src/clean.ts) removes short
+  blocks (< 600 chars AND < half the document text) matching
+  `defaults.boilerplate_markers` / per-site `extract.boilerplateMarkers`.
+  The container-share guard is essential: without it the readability wrapper
+  div of a short photo card matches a footer marker and the WHOLE article is
+  removed (observed on the caption fixture).
+- `rssify reprocess` mirrors the scrape-time og:image hero recovery and
+  honors `boilerplate_markers` — keep both call sites in sync when changing
+  clean options.
 
 ## Maintaining this file
 

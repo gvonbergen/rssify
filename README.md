@@ -2,8 +2,10 @@
 
 Self-hosted service that scrapes websites into cleaned, distraction-free HTML,
 indexes new articles on a schedule, and serves them as **RSS 2.0 feeds** at
-`<RSSify-domain>/<site>`. Optional LLM article extraction reproduces the full
-body verbatim (title, text, date) in parallel with the tag-based extractor.
+`<RSSify-domain>/<site>`. Extraction-quality safeguards ship built in: a
+config-driven fetch cascade, junk/gate-body detection, a source-URL blacklist
+(YouTube excluded from ingestion by default), boilerplate trimming, and
+og:image hero recovery.
 
 This repository is the **Phase 1 MVP** implementation of [`PLAN.md`](PLAN.md).
 
@@ -42,7 +44,7 @@ npm test
 ```sh
 cp docker-compose.example.yml docker-compose.yml   # your local file stays out of git
 cp config.example.yaml config.yaml   # Docker: keep server.host 0.0.0.0
-cp .env.example .env                  # fill in AI_API_KEY / FIRECRAWL_API_KEY
+cp .env.example .env                  # fill in FIRECRAWL_API_KEY (if used)
 docker compose up -d --build          # serves on http://<host>:3000
 ```
 
@@ -66,7 +68,7 @@ compose file — see the commented `traefik` block in `docker-compose.example.ym
 
 Secrets are **not** baked into the image — `config.yaml` and `.env` are
 bind-mounted read-only, edit them on the host and `docker compose restart`.
-`./data` (sqlite DB, raw HTML, LLM sidecars) and `./logs` persist on the host
+`./data` (sqlite DB, raw HTML, metadata sidecars) and `./logs` persist on the host
 as volumes. Feed URLs are unchanged: `/health`, `/<site>`, `/<site>/<section>`.
 
 When moving the container to another machine, also check the two `docker-compose.yml`
@@ -93,12 +95,6 @@ it always stays on the `engine` setting (Google News feed discovery is
 hardcoded plain HTTP).
 
 ```sh
-# Configure the AI endpoint used for LLM article extraction (optional — the
-# tag-based extractor works without it):
-rssify config set ai.base_url https://openrouter.ai/api/v1
-rssify config set ai.api_key <your-key>     # writes AI_API_KEY to .env
-rssify config set ai.model meta-llama/llama-3.1-8b-instruct
-
 # Add a site (new domain) — spawns `pi` to author the scraper module:
 rssify add https://example.com/section
 # Add another section of an already-registered domain (no pi invocation):
@@ -113,7 +109,6 @@ rssify serve                # HTTP server + scheduler
 #   GET /<site>                  merged RSS feed
 #   GET /<site>/<section>        per-section feed
 #   GET /<site>/item/<hash>      cleaned article HTML
-#   GET /<site>/item/<hash>/llm  LLM-extracted article (title/text/link/date)
 #   GET /<site>/status           scrape status
 #   GET /health                  liveness
 ```
@@ -156,15 +151,14 @@ controlled separately by `defaults.feed_item_limit`.
 | `rssify config show / config set <key> <value>` | Edit config; `*.api_key` values write to `.env` |
 
 To delete one article, copy its 40-character `<hash>` from the `cleaned` link
-(or the `LLMextraction` link, URL shape `/<site>/item/<hash>/llm`) on `/` or
-`/feed/<site>/articles`, then run:
+on `/` or `/feed/<site>/articles`, then run:
 
 ```sh
 rssify delete-article <site> <hash>
 ```
 
 This dedicated command removes only that article's database row and its
-cleaned, raw, metadata, and LLM files. It does not alter the site, sections,
+cleaned, raw, and metadata files. It does not alter the site, sections,
 schedule, or configuration. `rssify remove` retains its existing whole-site or
 section meaning.
 
@@ -196,32 +190,42 @@ manually). The per-site profile lives in the DB `config_json`:
 }
 ```
 
-## LLM extraction (parallel path)
+## Extraction-quality safeguards
 
-Alongside the tag-based extractor, RSSify can run an **AI extraction** on every new
-article that returns the four feed fields directly: **title, the full article body
-reproduced VERBATIM as clean HTML (word-for-word, formatting preserved, no
-ads/nav/paywall stubs/comments), canonical link, publication date**. Both
-paths run in parallel so you can compare which performs better, then keep one.
+The 2026-09 extraction-quality audits (150-article Camofox recheck + prior
+expanded audit) identified the failure classes these safeguards address:
 
-* Enabled by default when an AI key is configured (`ai.api_key`); toggle with
-  `defaults.llm_extract: false` or per-site `extract.llm: false`.
-* The result is cached per item at `data/<site>/<hash>.llm.json` and rendered on
-  `/` and `/feed/<site>/articles`: each article row reads `Title · cleaned ·
-  LLMextraction · original` — the **title** always opens the cleaned article view
-  (`/<site>/item/<hash>`) on every list surface, `cleaned` opens the same stored
-  cleaned article, `LLMextraction` (only when a sidecar is stored) opens
-  `/<site>/item/<hash>/llm` as a secondary destination, and `original` returns to
-  the scraped source URL.
-* Feeds serve the LLM fields by default (`defaults.feed_source: llm` — set in
-  `config.yaml`; per-site `extract.feedSource: "tags"` reverts a site) —
-  `<title>/<link>/<content:encoded>` come from the LLM sidecar, falling back to
-  tag fields when no sidecar is stored. The date is **not** overridden by the
-  sidecar's `publishedAt`: every surface (feed and overview) shows the same
-  database-backed date (`published_at ?? first_seen`).
-* `rssify reprocess <site>` re-runs LLM extraction from saved raw HTML without
-  re-scraping.
-* Output budget: `ai.extract_max_tokens` (default 32000); article body sent to the model is capped by `ai.max_input_chars` (default 40000).
+* **Junk-body gate** (`src/quality.ts`): marker- and structure-based detection
+  of JavaScript-gate notices, playback-error stubs, consent-only bodies,
+  copyright/footer plates, subscription-offer walls and nav-only fragments.
+  A junk verdict (like a near-empty body) advances the fetch cascade to the
+  next configured engine; when every engine is exhausted the last body is
+  stored and flagged weak — content is never silently dropped. Detection is
+  marker/structure only, never source-similarity (some aggregators rewrite or
+  translate article text, so faithful captures can legitimately differ).
+* **Source-URL blacklist** (`defaults.url_blacklist`, default
+  `[youtube.com, youtu.be]`): candidates whose URL — or canonical URL after a
+  redirect — matches a host pattern are skipped BEFORE any fetch and never
+  persisted. Host patterns match the host and every subdomain; an entry may
+  carry a path prefix (`"youtube.com/shorts"`) to narrow the match. Every
+  skip is logged with the matched entry. Per-site override:
+  config_json `{"extract": {"urlBlacklist": []}}` (empty array disables
+  blacklisting for that site).
+* **Non-article URL-pattern filter** (`defaults.skip_url_patterns`, default
+  `[]`): narrow wildcard patterns (`*` = any run of characters) matched
+  against `<host><pathname>` — for quote/chart/report-landing URL shapes
+  (e.g. `cnbc.com/quote/*`, `en.macromicro.me/charts/*`) without banning the
+  whole host. Per-site override: config_json `extract.skipUrlPatterns`.
+* **Boilerplate trimming** (`defaults.boilerplate_markers`): recurring
+  consent banners, "Preferred Sources" widgets, "Advt" ad labels, app
+  promos, © footer plates and related-content tails are removed from the
+  cleaned article when they appear as SHORT blocks (< 600 chars, < half the
+  document text) — long article text is never touched. Per-site override:
+  config_json `extract.boilerplateMarkers` (empty array disables).
+* **og:image hero recovery** (`withHeroImage`): when a cleaned article has no
+  in-body image but the source declares og:image/JSON-LD image, the image is
+  restored as a hero figure (http(s) URLs only). Text-only feeds strip it at
+  serve time as usual; `rssify reprocess` applies the same rule.
 
 ## Politely pacing requests (`scrape_delay`)
 
@@ -249,7 +253,7 @@ where the site's scraping limit is.
 ## Layout
 
 ```
-config.yaml             # backends, AI, defaults (secrets live in .env)
+config.yaml             # backends, defaults (secrets live in .env)
 .env                    # secrets (never committed)
 sites/<site>.ts         # pi-authored scraper modules (+ .config.json)
 data/state.sqlite       # registry & items (SQLite)
@@ -257,7 +261,6 @@ data/<site>/<hash>.html # cleaned main-content HTML (the content artifact)
 data/<site>/<hash>.raw.html # raw page HTML saved alongside (defaults.store_raw) so
                        # `rssify reprocess <site>` can re-clean without re-scraping
 data/<site>/<hash>.meta.json # optional sidecar metadata
-data/<site>/<hash>.llm.json  # optional LLM extraction sidecar
 logs/rssify.log         # structured (pino) logs
 src/                    # the app (config, db, backends, scraper, scheduler, server, cli)
 ```
