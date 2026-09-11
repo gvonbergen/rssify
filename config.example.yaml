@@ -1,5 +1,4 @@
 # Redacted example — copy to config.yaml and fill in secrets via:
-#   rssify config set ai.api_key <key>          (writes AI_API_KEY to .env)
 #   rssify config set backends.firecrawl.api_key <key>   (FIRECRAWL_API_KEY in .env)
 server:
   # Docker: must be 0.0.0.0 (127.0.0.1 binds only inside the container).
@@ -19,12 +18,6 @@ backends:
     base_url: https://api.firecrawl.dev
     api_key: ${FIRECRAWL_API_KEY}
     request_timeout_ms: 60000
-ai:
-  base_url: https://openrouter.ai/api/v1
-  api_key: ${AI_API_KEY}
-  model: meta-llama/llama-3.1-8b-instruct
-  max_input_chars: 40000
-  extract_max_tokens: 32000
 defaults:
   schedule: 0 */6 * * *
   engine: camofox
@@ -54,7 +47,36 @@ defaults:
   wait_ms: 0
   ignore_images: false
   store_raw: true
-  feed_source: llm
+  # Source-URL blacklist: candidates whose URL (or canonical URL after a
+  # redirect) matches a host pattern are skipped before any fetch and never
+  # persisted. YouTube is excluded from ingestion by default (host patterns
+  # cover every subdomain; add a path prefix like "youtube.com/shorts" to
+  # narrow a match). Per-site override: config_json
+  # {"extract": {"urlBlacklist": []}} — an empty array disables it there.
+  url_blacklist: [youtube.com, youtu.be]
+  # Narrow non-article URL-pattern filter (wildcards, matched against
+  # <host><pathname>) — for quote/chart/report-landing destinations without
+  # banning whole hosts. Empty by default. Per-site override:
+  # {"extract": {"skipUrlPatterns": ["cnbc.com/quote/*"]}}.
+  skip_url_patterns: []
+  # Recurring boilerplate blocks trimmed from cleaned articles (consent
+  # banners, "Preferred Sources" widgets, "Advt" labels, app promos, © footer
+  # plates, related-content tails). Only SHORT blocks (< 600 chars, < half
+  # the document text) matching a marker are removed. Per-site override:
+  # config_json extract.boilerplateMarkers (empty array disables).
+  boilerplate_markers:
+    - add to google preferred sources
+    - appears first in google search top stories
+    - we use cookies
+    - i agree to the updated privacy policy
+    - manage cookie preferences
+    - manage preferences
+    - advt
+    - download our app
+    - get the app
+    - install our app
+    - you may also like
+    - all rights reserved
 storage:
   data_dir: ./data
   db_path: ./data/state.sqlite

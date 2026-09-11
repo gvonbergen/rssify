@@ -29,17 +29,6 @@ export interface AppConfig {
     firecrawl: BackendFirecrawlConfig;
     plain: BackendPlainConfig;
   };
-  ai: {
-    base_url: string;
-    api_key: string;
-    model: string;
-    max_input_chars: number;
-    /** Max output tokens for the LLM article-extraction call (full body text
-     *  needs a large output budget; reasoning models also consume a large
-     *  share of the budget on hidden reasoning tokens, so keep this
-     *  generous). */
-    extract_max_tokens: number;
-  };
   defaults: {
     schedule: string;
     engine: 'camofox' | 'firecrawl' | 'plain';
@@ -115,16 +104,6 @@ export interface AppConfig {
      *  rules, date fixes) can re-run locally without re-scraping the site.
      *  Global switch; per-site override: config_json `extract.storeRaw`. */
     store_raw: boolean;
-    /** Run LLM-based article extraction (title / full clean text / link /
-     *  publication date) in parallel with the tag-based extractor. Only
-     *  effective when an AI api key is configured. Per-site override:
-     *  config_json `extract.llm`. */
-    llm_extract: boolean;
-    /** Which extraction's fields feed the RSS items: 'tags' (readability +
-     *  structured metadata) or 'llm' (AI-extracted title/text/link/date,
-     *  falling back to tag fields when no LLM result is stored). Per-site
-     *  override: config_json `extract.feedSource`. */
-    feed_source: 'tags' | 'llm';
   };
   storage: {
     data_dir: string;
@@ -152,13 +131,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       request_timeout_ms: 60000,
       user_agent: '',
     },
-  },
-  ai: {
-    base_url: 'https://api.openai.com/v1',
-    api_key: '',
-    model: 'gpt-4o-mini',
-    max_input_chars: 40000,
-    extract_max_tokens: 32000,
   },
   defaults: {
     schedule: '0 */6 * * *',
@@ -192,8 +164,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     ignore_images: false,
     store_raw: true,
     schedule_jitter_seconds: 1800,
-    llm_extract: true,
-    feed_source: 'tags',
   },
   storage: {
     data_dir: './data',
@@ -339,7 +309,6 @@ export function configSet(path: string, value: string, paths: ConfigPaths = {}):
   // Secrets → .env
   if (/\.(api_key|access_key)$/.test(path) || /KEY/.test(path)) {
     const secretKeys: Record<string, string> = {
-      'ai.api_key': 'AI_API_KEY',
       'backends.firecrawl.api_key': 'FIRECRAWL_API_KEY',
       'backends.camofox.access_key': 'CAMOFOX_ACCESS_KEY',
     };

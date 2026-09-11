@@ -104,7 +104,7 @@ test('persistArticle advances through engines on a near-empty extraction and sto
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: '<p>stub</p>' },
-      null, backendsMock, noopLogger, cascade, 0,
+      backendsMock, noopLogger, cascade, 0,
     );
     // Failed refetch advances to the next engine; firecrawl's cleaned body wins.
     assert.deepEqual(refetched, ['camofox', 'firecrawl']);
@@ -137,7 +137,7 @@ test('persistArticle never cascades for a picture item (caption + image is legit
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: caption },
-      null, backendsMock, noopLogger, cascade, 0,
+      backendsMock, noopLogger, cascade, 0,
     );
     assert.deepEqual(refetched, []); // no fallback-engine spend on a photo card
     assert.equal(res.inserted, 1);
@@ -165,7 +165,7 @@ test('persistArticle stores the last attempt when every engine yields a near-emp
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: '<p>stub</p>' },
-      null, backendsMock, noopLogger, cascade, 0,
+      backendsMock, noopLogger, cascade, 0,
     );
     assert.deepEqual(refetched, ['camofox']);
     assert.equal(res.inserted, 1);
@@ -199,7 +199,7 @@ test('persistArticle advances to the next engine when cleaning fails (bot-gated 
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: 'Reuters item', html: datadomeFixture() },
-      null, backendsMock, noopLogger, cascade, 0,
+      backendsMock, noopLogger, cascade, 0,
     );
     assert.deepEqual(refetched, ['firecrawl']);
     assert.equal(res.inserted, 1);
@@ -218,7 +218,7 @@ test('persistArticle without a cascade keeps exact legacy behavior (no refetch, 
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: '<p>stub</p>' },
-      null, backendsMock, noopLogger,
+      backendsMock, noopLogger,
     );
     assert.equal(res.inserted, 1);
     assert.equal(res.bodyGood, false);

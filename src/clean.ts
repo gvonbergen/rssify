@@ -114,65 +114,9 @@ export function withHeroImage(
   return figure + content;
 }
 
-/** Escape text for safe inclusion as HTML body content. */
-function escHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/**
- * Convert LLM-extracted plain text into a safe HTML fragment: escape
- * everything, split on blank lines into <p> paragraphs, and hard-wrap the
- * rest so long lines render as readable paragraphs. Never trusts the model's
- * output as HTML — everything is escaped first.
- */
-export function textToHtml(text: string): string {
-  const blocks = text
-    .split(/\n{2,}/)
-    .map((b) => b.replace(/\n+/g, ' ').trim())
-    .filter(Boolean)
-    .map((b) => `<p>${escHtml(b)}</p>`);
-  if (blocks.length === 0) return '';
-  return blocks.join('\n');
-}
-
-/**
- * Sanitize LLM-generated article HTML before it is stored/served: drop
- * executable elements (script/style/iframe/…), strip event-handler
- * attributes, block javascript:/data: URLs, and only keep http(s) image
- * sources. The model's output is never trusted as-is.
- */
-export function sanitizeArticleHtml(html: string): string {
-  const $ = load(html);
-  $('script, style, iframe, object, embed, form, input, button, noscript, link, meta, svg, video, audio').remove();
-  // Unwrap document-level wrapper tags the model may echo back, leaving a
-  // clean body fragment (html/head/body and readability's wrapper divs).
-  $('html, head, body').each((_i, el) => {
-    $(el).replaceWith($(el).contents());
-  });
-  $('*').each((_i, el: any) => {
-    const attribs = (el.attribs ?? {}) as Record<string, string>;
-    for (const k of Object.keys(attribs)) {
-      if (k.toLowerCase().startsWith('on')) $(el).removeAttr(k);
-    }
-  });
-  $('a[href]').each((_i, el) => {
-    const href = ($(el).attr('href') ?? '').trim();
-    if (/^(javascript|vbscript|data):/i.test(href)) $(el).removeAttr('href');
-  });
-  $('img[src]').each((_i, el) => {
-    const src = ($(el).attr('src') ?? '').trim();
-    if (!/^https?:\/\//i.test(src)) $(el).removeAttr('src');
-  });
-  return $.html() ?? html;
-}
-
 export interface CleanResult {
   content: string; // cleaned article HTML (for <content:encoded> / <hash>.html)
-  text: string; // plain text (for <description> / LLM input)
+  text: string; // plain text (for <description>)
 }
 
 /**
@@ -448,7 +392,7 @@ export function absolutize(html: string, baseUrl: string): string {
   return $.html();
 }
 
-/** Extract plain text from HTML (for <description> / LLM input). */
+/** Extract plain text from HTML (for <description>). */
 export function textFromHtml(html: string): string {
   const $ = load(html);
   // Some sites (ASP.NET-era pages, e.g. Finextra) wrap the ENTIRE document

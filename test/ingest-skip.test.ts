@@ -45,7 +45,7 @@ test('a junk body (subscription-offer wall) advances the cascade even though it 
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: `<article><p>${offerWall}</p></article>` },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger, cascade, 0,
     );
     assert.deepEqual(refetched, ['camofox']);
@@ -79,7 +79,7 @@ test('junk verdicts are exempt for picture items (caption + image cards stay)', 
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: caption },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger, cascade, 0,
     );
     assert.deepEqual(refetched, []);
@@ -106,7 +106,7 @@ test('persistArticle refuses to store an article whose canonical URL is blacklis
     const res = await persistArticle(
       db, config, 'example', 'news', { url: 'https://www.example.test/news/x' },
       { url: 'https://www.youtube.com/watch?v=abc', title: 'Junk', html: goodBody('https://www.youtube.com/watch?v=abc') },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger,
     );
     assert.equal(res.inserted, 0);
@@ -132,7 +132,7 @@ test('persistArticle injects the og:image hero when the cleaned article has no i
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger,
     );
     assert.equal(res.inserted, 1);
@@ -156,7 +156,7 @@ test('persistArticle leaves articles that already carry an in-body image untouch
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger,
     );
     assert.equal(res.inserted, 1);
@@ -178,7 +178,7 @@ test('persistArticle trims the recurring "Preferred Sources" boilerplate from th
     const res = await persistArticle(
       db, config, 'example', 'news', cand,
       { url: cand.url, title: '', html: preferredSourcesFixture() },
-      null, { plain: { fetch: async () => { throw new Error('unused'); } } } as unknown as Backends,
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
       noopLogger,
     );
     assert.equal(res.inserted, 1);

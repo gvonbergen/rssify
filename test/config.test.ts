@@ -23,7 +23,7 @@ test('loadConfig deep-merges isolated YAML and expands only supplied environment
     const configPath = join(dir, 'nested', 'config.yaml');
     const envPath = join(dir, 'nested', '.env');
     await mkdir(join(dir, 'nested'), { recursive: true });
-    await writeFile(configPath, 'server:\n  port: 4321\n  domain: ${TEST_DOMAIN}\ndefaults:\n  follow: false\nai:\n  model: local-model\n', 'utf8');
+    await writeFile(configPath, 'server:\n  port: 4321\n  domain: ${TEST_DOMAIN}\ndefaults:\n  follow: false\n  wait_ms: 5\n', 'utf8');
     await writeFile(envPath, 'TEST_DOMAIN=feeds.example.test\n', 'utf8');
     const config = loadConfig({ configPath, envPath });
     assert.equal(config.server.port, 4321);
@@ -31,7 +31,7 @@ test('loadConfig deep-merges isolated YAML and expands only supplied environment
     assert.equal(config.server.domain, 'feeds.example.test');
     assert.equal(config.defaults.follow, false);
     assert.equal(config.defaults.feed_item_limit, DEFAULT_CONFIG.defaults.feed_item_limit);
-    assert.equal(config.ai.model, 'local-model');
+    assert.equal(config.defaults.wait_ms, 5);
     assert.equal(config.storage.db_path, DEFAULT_CONFIG.storage.db_path);
     assert.equal(configGet('server.domain', { configPath, envPath }), 'feeds.example.test');
     assert.equal(configGet('does.not.exist', { configPath, envPath }), undefined);

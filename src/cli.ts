@@ -29,7 +29,6 @@ import {
 import { add, RESERVED } from './add.ts';
 import { runSiteScrape, withRateLimit, buildBackends, delayBandMs } from './scraper.ts';
 import { reprofileSite } from './extract/profile.ts';
-import { buildLlmExtractor } from './extract/llm.ts';
 import { createApp } from './server.ts';
 import { Scheduler } from './scheduler.ts';
 import { logger, siteLogger, type Logger, ROOT } from './logger.ts';
@@ -613,17 +612,6 @@ program
       }
       const band = delayBandMs(siteCfg, config.defaults.scrape_delay);
       const backends = withRateLimit(buildBackends(config, log), band, site, log);
-      // LLM extraction runs in parallel with the tag-based re-clean: refresh
-      // the .llm.json sidecar from the same raw HTML. Only when the site's
-      // feedSource is 'llm' do LLM title/date also update the item row.
-      const extCfg = (siteCfg['extract'] ?? {}) as Record<string, unknown>;
-      const llmExtractEnabled =
-        config.defaults.llm_extract && Boolean(config.ai.api_key) && extCfg['llm'] !== false;
-      const llmExtractor = llmExtractEnabled ? buildLlmExtractor(config) : null;
-      const feedSource =
-        extCfg['feedSource'] === 'llm' || extCfg['feedSource'] === 'tags'
-          ? extCfg['feedSource']
-          : config.defaults.feed_source;
       let changed = 0;
       let same = 0;
       let failed = 0;
@@ -713,48 +701,8 @@ program
           if ((!row.title || row.title === 'Untitled') && meta.title) {
             updates.title = meta.title;
           }
-          // --- LLM extraction (parallel path, best-effort) ---
-          // Re-run the AI extraction on the same raw HTML and refresh the
-          // sidecar so the /item/<hash>/llm route and an 'llm' feedSource see
-          // the current result. Failures are logged, never fatal.
-          const llmBits: string[] = [];
-          if (llmExtractor) {
-            try {
-              const llm = await llmExtractor(raw, row.url, cleaned?.text ?? undefined, cleaned?.content ?? undefined);
-              if (llm) {
-                const llmDataDir = resolve(ROOT, config.storage.data_dir, site);
-                mkdirSync(llmDataDir, { recursive: true });
-                writeFileSync(
-                  join(llmDataDir, `${row.hash}.llm.json`),
-                  JSON.stringify(
-                    {
-                      title: llm.title,
-                      html: llm.html,
-                      text: llm.text,
-                      url: llm.url,
-                      publishedAt: llm.publishedAt,
-                      model: llm.model,
-                      extractedAt: llm.extractedAt,
-                    },
-                    null,
-                    2,
-                  ),
-                  'utf8',
-                );
-                llmBits.push('llm');
-                if (feedSource === 'llm') {
-                  // LLM fields win over tag fields when the feed reads LLM.
-                  if (llm.title) updates.title = llm.title;
-                }
-              } else {
-                console.log(`llm extract: nothing usable ${row.url}`);
-              }
-            } catch (e) {
-              console.log(`llm extract FAIL ${String(e).slice(0, 160)} ${row.url}`);
-            }
-          }
           const keys = Object.keys(updates);
-          if (keys.length === 0 && llmBits.length === 0) {
+          if (keys.length === 0) {
             same++;
             continue;
           }
@@ -771,7 +719,6 @@ program
               ? `date=${new Date(updates.published_at as number).toISOString()}`
               : '',
             updates.title ? `title` : '',
-            ...llmBits,
           ].filter(Boolean);
           console.log(`updated [${bits.join(', ')}] ${row.url}`);
         } catch (e) {
@@ -883,7 +830,7 @@ program
 
 program
   .command('delete-article')
-  .description('Delete exactly one stored article and its cleaned/raw/metadata/LLM artifacts.')
+  .description('Delete exactly one stored article and its cleaned/raw/metadata artifacts.')
   .argument('<site>', 'site identifier from the article route')
   .argument('<hash>', '40-character hash from /<site>/item/<hash> on the HTML article listing')
   .action(async (site: string, hash: string) => {

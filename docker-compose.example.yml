@@ -30,7 +30,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./.env:/app/.env:ro
-      - ./data:/app/data          # sqlite DB + scraped raw HTML + LLM sidecars
+      - ./data:/app/data          # sqlite DB + scraped raw HTML + metadata sidecars
       - ./logs:/app/logs
       - ./sites:/app/sites        # scraper modules (NOT in git; persists rssify add)
     healthcheck:

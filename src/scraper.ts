@@ -22,7 +22,6 @@ import type { AppConfig } from './config.ts';
 import { resolveBoilerplateMarkers } from './config.ts';
 import { buildBackends } from './backends/index.ts';
 export { buildBackends };
-import { buildLlmExtractor } from './extract/llm.ts';
 import { absolutize, extractMetadata, stripAdBlocks, textFromHtml, withHeroImage } from './clean.ts';
 import { cleanHtmlAsync } from './cleanRunner.ts';
 import { load } from 'cheerio';
@@ -299,22 +298,6 @@ export async function runSiteScrape(
     }
     const backends: Backends = withRateLimit(buildBackends(config, log), band, site, log);
 
-    // LLM article extraction runs IN PARALLEL with the tag-based path (both
-    // produce fields for every new article; the feed picks one via
-    // feed_source). Enabled unless the global switch is off, the site opts
-    // out via `extract.llm: false`, or no API key is configured.
-    const siteExtractCfg = (siteCfg['extract'] ?? {}) as Record<string, unknown>;
-    const llmExtractEnabled =
-      config.defaults.llm_extract && Boolean(config.ai.api_key) && siteExtractCfg['llm'] !== false;
-    const llmExtractor = llmExtractEnabled ? buildLlmExtractor(config) : null;
-    if (llmExtractEnabled) {
-      log.info('llm extract: enabled (parallel with tag extraction)');
-    } else {
-      log.info(config.ai.api_key
-        ? 'llm extract: disabled (defaults.llm_extract=false or site extract.llm=false)'
-        : 'llm extract: disabled — no AI api key configured');
-    }
-
     const sections = section
       ? [getSection(db, site, section)].filter((x): x is NonNullable<typeof x> => !!x)
       : listSections(db, site);
@@ -470,7 +453,6 @@ export async function runSiteScrape(
                   sec.section,
                   cand,
                   fbArticle,
-                  llmExtractor,
                   backends,
                   secLog,
                   undefined,
@@ -515,7 +497,6 @@ export async function runSiteScrape(
             sec.section,
             cand,
             article,
-            llmExtractor,
             backends,
             secLog,
             cascade,
@@ -672,7 +653,6 @@ export async function persistArticle(
   section: string,
   cand: DiscoveredItem,
   article: Article,
-  llmExtractor: ReturnType<typeof buildLlmExtractor> | null,
   backends: Backends,
   log: Logger,
   /** Fetch-cascade seam (quality-triggered engine fallback): when the cleaned
@@ -835,7 +815,7 @@ export async function persistArticle(
   }
 
   // The winning attempt is the content source: its title/date/metadata (and
-  // raw html for LLM extraction) must feed every downstream step, not the
+  // raw html for reprocessing) must feed every downstream step, not the
   // primary engine's discarded attempt.
   article = attempt;
 
@@ -974,49 +954,6 @@ export async function persistArticle(
     if (bylineImage) sidecar['bylineImage'] = bylineImage;
     if (otherMeta(meta)) sidecar['metadata'] = otherMeta(meta);
     writeFileSync(join(dataDir, `${hash}.meta.json`), JSON.stringify(sidecar, null, 2), 'utf8');
-  }
-
-  // --- LLM extraction (parallel path, best-effort) ---
-  // Runs only for NEW items (after the dedup + paywall filters above, so
-  // duplicates never burn model credits). The result is persisted to a
-  // sidecar (`data/<site>/<hash>.llm.json`) which the feed and the
-  // `/item/<hash>/llm` route serve without re-calling the model. A failure
-  // is logged and the item still saves with the tag-based fields.
-  if (llmExtractor) {
-    try {
-      // `content` (cleaned HTML) + `text` are the tag-path output — the LLM
-      // gets structured article content + head metadata instead of truncated
-      // raw HTML, so it can reproduce the body VERBATIM with formatting and
-      // the body is never cut off by max_input_chars.
-      const llm = await llmExtractor(article.html, article.url, text, content);
-      if (llm) {
-        writeFileSync(
-          join(dataDir, `${hash}.llm.json`),
-          JSON.stringify(
-            {
-              title: llm.title,
-              html: llm.html,
-              text: llm.text,
-              url: llm.url,
-              publishedAt: llm.publishedAt,
-              model: llm.model,
-              extractedAt: llm.extractedAt,
-            },
-            null,
-            2,
-          ),
-          'utf8',
-        );
-        siteLogger(site).info(
-          { url: article.url, hasText: llm.text.length > 0, hasDate: !!llm.publishedAt, model: llm.model },
-          'llm extract: ok — sidecar saved',
-        );
-      } else {
-        siteLogger(site).warn({ url: article.url }, 'llm extract: returned nothing usable — tag fields stand');
-      }
-    } catch (e) {
-      siteLogger(site).error({ url: article.url, err: String(e) }, 'llm extract failed');
-    }
   }
 
   // --- insert row + membership ---
