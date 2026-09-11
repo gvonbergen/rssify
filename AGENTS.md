@@ -101,3 +101,22 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+## Fetch cascade (engine priority)
+
+- Destination-article fetching is a configuration-driven cascade
+  (`src/engines.ts`): per-site `extract.enginePriority` → global
+  `defaults.engine_priority` (default `['plain','camofox','firecrawl']`) →
+  legacy single `defaults.engine`. `filterConfiguredEngines` drops unconfigured
+  firecrawl but never returns an empty list.
+- Two halves: fetch errors advance in `runSiteScrape`'s parse loop; empty/
+  near-empty cleaned bodies advance inside `persistArticle` via the
+  `FetchCascade` seam (`{ engines, startIndex, refetch }` in src/contract.ts).
+  Picture items are exempt (a photo card never triggers fallback-engine spend).
+- Discovery is NOT cascaded — it stays on the primary engine (plain HTTP by
+  default; Google News feed discovery is hardcoded plain). `persistArticle`
+  without a cascade is byte-for-byte legacy behavior; `engine_priority: []`
+  restores exact single-engine behavior.
+- Tests: test/fetch-cascade.test.ts (resolution rules, near-empty advance,
+  picture exemption, exhaustion, end-to-end runSiteScrape via a fake module
+  written into git-ignored sites/ at test time).

@@ -142,6 +142,7 @@ editing by hand (the CLI commands below update the DB; `remove` deletes the file
 | `storeRaw` | boolean | `defaults.store_raw` | Save `data/<site>/<hash>.raw.html` next to cleaned content |
 | `llm` | boolean | `defaults.llm_extract` | Enable/disable the LLM extraction path for this site (`false` opts out; only effective when an AI key is configured) |
 | `feedSource` | `'tags' \| 'llm'` | `defaults.feed_source` | Which extraction feeds the RSS items for this site — `'llm'` uses the stored sidecar's title/html/link (fallback to tag fields when no sidecar); the date is never taken from the sidecar — both surfaces share `published_at ?? first_seen`. **This instance defaults to `'llm'`** |
+| `enginePriority` | **string[]** | `defaults.engine_priority` | Per-site fetch-cascade order (`src/engines.ts`); valid values `plain`/`camofox`/`firecrawl` |
 
 Example (see `sites/electronicpaymentsinternational.config.json`):
 
@@ -343,11 +344,19 @@ side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
 
 `runSiteScrape(db, config, site, section?)` is the engine. Flow per section:
 
+0. **fetch cascade order**: `resolveEnginePriority(config, siteCfg)` (per-site
+   `extract.enginePriority` → `defaults.engine_priority` → legacy single
+   `defaults.engine`), filtered by `filterConfiguredEngines` (firecrawl skipped
+   without an API key; never returns an empty list). Discovery always stays on
+   the primary engine — Google News feed discovery and index pagination are
+   plain HTTP by default.
 1. **discover** via the site module → candidates (deduped by normalized URL).
 2. **pre-parse skip** (no fetch): listing URLs (paths matching any registered
    section index) and already-known items (sha1 of both slash spellings).
 3. **parse phase** with bounded concurrency (`defaults.scrape_concurrency`):
-   `scraper.parse` → `persistArticle`.
+   fetch-cascade parse (`scraper.parse` through the configured engine priority,
+   advancing on fetch failure) → `persistArticle` (advances the cascade on a
+   near-empty cleaned body).
 4. **quality tracking** (via `summarizeParseResults`): `bodyGood` = cleaned text
    ≥ `MIN_QUALITY_BODY` (200); `dateGood` = parsed `published_at`. Picture items
    (`looksLikePictureItem`: ≥1 img + text < 500 + substantial-paragraph ratio
@@ -373,7 +382,17 @@ side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
 
 ### `persistArticle`
 
-`(db, config, site, section, cand, article, llmExtractor, backends, log) → { inserted; bodyGood; dateGood; paywalled?; pictureItem? }`
+`(db, config, site, section, cand, article, llmExtractor, backends, log, cascade?, usedEngineIndex?) → { inserted; bodyGood; dateGood; paywalled?; pictureItem? }`
+
+`cascade?: FetchCascade` (`{ engines, startIndex, refetch }` from
+`src/contract.ts`) enables the quality-triggered fetch cascade: when cleaning
+fails or the cleaned text is near-empty (below `MIN_QUALITY_BODY` and NOT a
+picture item — a photo card is legitimate content), the next engine in
+`cascade.engines` is re-fetched via `refetch` and the attempt repeats; the
+last attempt is stored (flagged weak) when the list is exhausted, and the
+winning attempt feeds title/date/metadata/LLM downstream.
+Without a cascade the path is byte-for-byte legacy (including the bot-gate
+firecrawl fallback inside step 2).
 
 1. Normalizes URL/title; reads site config for `ad_markers`.
 2. Cleans: firecrawl path (`article.cleaned`) → `absolutizeBody` + `stripAdBlocks`

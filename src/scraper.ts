@@ -32,9 +32,11 @@ import type {
   Article,
   Backends,
   DiscoveredItem,
+  FetchCascade,
   ScraperContext,
   SiteScraper,
 } from './contract.ts';
+import { primaryEngine, resolveEnginePriority, filterConfiguredEngines } from './engines.ts';
 
 /** Cache of loaded scraper module instances, keyed by site (with mtime bust). */
 async function loadScraper(site: string, modulePath: string): Promise<SiteScraper> {
@@ -48,7 +50,13 @@ async function loadScraper(site: string, modulePath: string): Promise<SiteScrape
   return scraper;
 }
 
-function makeContext(db: Db, site: string, config: AppConfig, section: string): ScraperContext {
+function makeContext(
+  db: Db,
+  site: string,
+  config: AppConfig,
+  section: string,
+  engine?: string,
+): ScraperContext {
   const row = getSite(db, site);
   let configInputs: Record<string, unknown> = {};
   try {
@@ -65,7 +73,7 @@ function makeContext(db: Db, site: string, config: AppConfig, section: string): 
       set: async (key, value) => kvSet(db, site, key, value),
       del: async (key) => kvDel(db, site, key),
     },
-    engine: config.defaults.engine,
+    engine: engine ?? config.defaults.engine,
     discoverMax: config.defaults.discover_max,
     follow: config.defaults.follow,
     followDepth: config.defaults.follow_depth,
@@ -257,6 +265,13 @@ export async function runSiteScrape(
       siteCfg = {};
     }
     const band = delayBandMs(siteCfg, config.defaults.scrape_delay);
+    // Config-driven fetch-cascade order for DESTINATION ARTICLE PAGES: the
+    // primary engine fetches first, and on failure (or a near-empty cleaned
+    // extraction, advanced inside persistArticle) the next configured engine
+    // takes over. Discovery is NOT cascaded — index/feed listing pages (incl.
+    // Google News feed discovery) stay on the primary engine (plain HTTP).
+    const engines = filterConfiguredEngines(resolveEnginePriority(config, siteCfg), config);
+    log.info({ engines }, 'fetch cascade: engine priority for article pages');
     if (band.upperMs > 0) {
       log.info(
         { site, lowerMs: band.lowerMs, upperMs: band.upperMs },
@@ -303,7 +318,7 @@ export async function runSiteScrape(
       const secLog = siteLogger(site).child({ section: sec.section });
       let candidates: DiscoveredItem[];
       try {
-        const ctx = makeContext(db, site, config, sec.section);
+        const ctx = makeContext(db, site, config, sec.section, engines[0]);
         candidates = await scraper.discover(ctx, backends, {
           section: sec.section,
           indexUrl: sec.index_url,
@@ -371,32 +386,34 @@ export async function runSiteScrape(
         const total = fresh.length;
         const t0 = Date.now();
         secLog.info({ idx: i + 1, total, url: cand.url }, 'parse: fetching article');
-        try {
-          const ctx = makeContext(db, site, config, sec.section);
-          const article = await scraper.parse(ctx, backends, cand);
-          const res = await persistArticle(
-            db,
-            config,
-            site,
-            sec.section,
-            cand,
-            article,
-            llmExtractor,
-            backends,
-            secLog,
-          );
-          secLog.info(
-            { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
-            res.paywalled ? 'parse: paywall — skipped' : res.inserted ? 'parse: ok — new item' : 'parse: duplicate — skipped',
-          );
-          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
-        } catch (e) {
-          // Bot-gate HTTP error (e.g. Cloudflare challenge returns 403): the
-          // plain backend throws before any HTML reaches cleaning. If Firecrawl
-          // is configured, retry the page once through its headless browser and
-          // persist the cleaned HTML as a regular (cleaned) article.
-          const msg = String(e);
-          if (config.backends.firecrawl.api_key && /(->|status|HTTP)\s*403/.test(msg)) {
+        // --- fetch cascade, part 1 (fetch errors): try the primary engine,
+        // then advance through the next configured engines on fetch failure
+        // (network error, bot gate, timeout, non-2xx). The quality-triggered
+        // part (empty/near-empty cleaned body) advances inside persistArticle
+        // via the FetchCascade seam below. ---
+        let article: Article | null = null;
+        let usedIdx = -1;
+        let lastErr: unknown = null;
+        for (let e = 0; e < engines.length; e++) {
+          try {
+            const ctx = makeContext(db, site, config, sec.section, engines[e]);
+            article = await scraper.parse(ctx, backends, cand);
+            usedIdx = e;
+            break;
+          } catch (err) {
+            lastErr = err;
+            secLog.warn(
+              { idx: i + 1, total, url: cand.url, engine: engines[e], err: String(err) },
+              'parse: engine fetch failed — advancing to next engine',
+            );
+          }
+        }
+        if (!article) {
+          // Legacy direct firecrawl retry for bot-gated 403s. Only relevant
+          // when firecrawl was NOT already tried by the cascade above (when
+          // configured it is part of the engine list and already ran).
+          const msg = String(lastErr);
+          if (config.backends.firecrawl.api_key && !engines.includes('firecrawl') && /(->|status|HTTP)\s*403/.test(msg)) {
             try {
               const r = await backends.firecrawl.scrape(cand.url, {});
               if (r?.html) {
@@ -417,6 +434,8 @@ export async function runSiteScrape(
                   llmExtractor,
                   backends,
                   secLog,
+                  undefined,
+                  engines.length,
                 );
                 secLog.info(
                   { idx: i + 1, total, url: cand.url, inserted: res.inserted, ms: Date.now() - t0 },
@@ -428,6 +447,47 @@ export async function runSiteScrape(
               secLog.warn({ url: cand.url, err: String(e2) }, 'firecrawl fallback failed');
             }
           }
+          secLog.error(
+            { idx: i + 1, total, url: cand.url, err: String(lastErr), ms: Date.now() - t0 },
+            'parse failed',
+          );
+          errors.push(`parse ${cand.url}: ${String(lastErr)}`);
+          return { cand: cand.url, ok: false, inserted: 0, bodyGood: false, dateGood: false, paywalled: false, picture: false } as const;
+        }
+        // --- fetch cascade, part 2 (quality): persistArticle advances through
+        // the remaining engines when the cleaned body comes back empty or
+        // near-empty. Skipped entirely for single-engine sites (no cascade —
+        // exact legacy behavior). ---
+        const cascade: FetchCascade | undefined = engines.length > 1
+          ? {
+              engines,
+              startIndex: usedIdx,
+              refetch: async (engine: string) => {
+                const ctx = makeContext(db, site, config, sec.section, engine);
+                return scraper.parse(ctx, backends, cand);
+              },
+            }
+          : undefined;
+        try {
+          const res = await persistArticle(
+            db,
+            config,
+            site,
+            sec.section,
+            cand,
+            article,
+            llmExtractor,
+            backends,
+            secLog,
+            cascade,
+            usedIdx,
+          );
+          secLog.info(
+            { idx: i + 1, total, url: cand.url, inserted: res.inserted, paywalled: !!res.paywalled, ms: Date.now() - t0 },
+            res.paywalled ? 'parse: paywall — skipped' : res.inserted ? 'parse: ok — new item' : 'parse: duplicate — skipped',
+          );
+          return { cand: cand.url, ok: true, inserted: res.inserted, bodyGood: res.bodyGood, dateGood: res.dateGood, paywalled: !!res.paywalled, picture: !!res.pictureItem } as const;
+        } catch (e) {
           secLog.error(
             { idx: i + 1, total, url: cand.url, err: String(e), ms: Date.now() - t0 },
             'parse failed',
@@ -570,6 +630,13 @@ export async function persistArticle(
   llmExtractor: ReturnType<typeof buildLlmExtractor> | null,
   backends: Backends,
   log: Logger,
+  /** Fetch-cascade seam (quality-triggered engine fallback): when the cleaned
+   * body comes back empty/near-empty (or cleaning fails), advance through the
+   * remaining engines and re-fetch. Undefined for single-engine sites — exact
+   * legacy behavior. */
+  cascade?: FetchCascade,
+  /** Index into cascade.engines of the engine that produced `article`. */
+  usedEngineIndex?: number,
 ): Promise<{ inserted: number; bodyGood: boolean; dateGood: boolean; paywalled?: boolean; pictureItem?: boolean }> {
   if (!article || typeof article.html !== 'string' || !article.html) {
     throw new Error('parse returned empty article (no html)');
@@ -591,42 +658,87 @@ export async function persistArticle(
     ? (adExtract['ad_markers'] as unknown[]).map(String)
     : [];
 
-  // --- cleaning + metadata (centralized) ---
-  let content: string;
-  let text: string;
+  // --- cleaning + metadata (centralized), with quality-triggered engine
+  //     fallback (fetch cascade part 2) ---
+  // Each attempt cleans one fetched article. When cleaning fails outright or
+  // the extraction is empty/near-empty (below MIN_QUALITY_BODY and not a
+  // picture item — a caption + image is legitimate content, never a reason to
+  // burn fallback-engine credits), the next configured engine advances via
+  // the cascade's refetch and the attempt repeats. Without a cascade this is
+  // byte-for-byte the legacy single-attempt path.
+  let content: string = '';
+  let text: string = '';
   let meta: ReturnType<typeof extractMetadata> = {};
-  if (article.cleaned === true) {
-    // firecrawl path: html already cleaned; metadata comes via Article.metadata
-    content = absolutizeBody(article.html, article.url);
-    if (adMarkers.length) {
-      content = stripAdBlocks(content, adMarkers);
-      text = textFromHtml(content);
+  let attempt: Article = article;
+  let engineIdx = usedEngineIndex ?? 0;
+
+  for (;;) {
+    let aContent: string = '';
+    let aText: string = '';
+    let aMeta: ReturnType<typeof extractMetadata> = {};
+    let ok = false;
+    let extractionError: Error | null = null;
+
+    if (attempt.cleaned === true) {
+      // firecrawl path: html already cleaned; metadata comes via Article.metadata
+      aContent = absolutizeBody(attempt.html, attempt.url);
+      if (adMarkers.length) {
+        aContent = stripAdBlocks(aContent, adMarkers);
+        aText = textFromHtml(aContent);
+      } else {
+        aText = textFromHtml(attempt.html);
+      }
+      aMeta = firecrawlMetadata(attempt.metadata);
+      ok = true;
     } else {
-      text = textFromHtml(article.html);
+      // camofox/plain path: raw page → readability + metadata extraction
+      // (worker-threaded cleaner: jsdom 29's per-window retention leak is
+      // recycled away by cleanHtmlAsync instead of accumulating in this
+      // process)
+      const cleaned = await cleanHtmlAsync(attempt.html, attempt.url, { adMarkers, log });
+      if (cleaned) {
+        aContent = cleaned.content;
+        aText = cleaned.text;
+        aMeta = extractMetadata(attempt.html, attempt.url);
+        ok = true;
+      } else {
+        extractionError = new Error('readability could not extract article content');
+      }
     }
-    meta = firecrawlMetadata(article.metadata);
-  } else {
-    // camofox path: raw page → readability + metadata extraction
-    // (worker-threaded cleaner: jsdom 29's per-window retention leak is
-    // recycled away by cleanHtmlAsync instead of accumulating in this process)
-    const cleaned = await cleanHtmlAsync(article.html, article.url, { adMarkers, log });
-    if (!cleaned) {
-      // Bot-protection interstitial (e.g. Cloudflare challenge)? The fetch
-      // returns the challenge page with no article. Retry once through
-      // Firecrawl (headless browser) when it is configured, then store its
-      // cleaned HTML exactly like the native firecrawl path.
-      if (looksBotGated(article.html) && config.backends.firecrawl.api_key) {
+
+    const canAdvance = cascade !== undefined && engineIdx + 1 < cascade.engines.length;
+    if (ok) {
+      // Near-empty trigger: a successful extraction whose text sits below the
+      // good-body threshold. Picture items are exempt (see above).
+      const nearEmpty =
+        aText.trim().length < MIN_QUALITY_BODY &&
+        !looksLikePictureItem(aContent, aText);
+      if (!nearEmpty || !canAdvance) {
+        content = aContent;
+        text = aText;
+        meta = aMeta;
+        break;
+      }
+    } else if (!canAdvance) {
+      // Engines exhausted (or no cascade). Preserve the legacy bot-gate
+      // firecrawl fallback exactly for the single-engine path: the fetch
+      // returned a bot-protection interstitial (e.g. Cloudflare challenge)
+      // with no article. Retry once through Firecrawl (headless browser) when
+      // it is configured, then store its cleaned HTML exactly like the native
+      // firecrawl path. (When a cascade is active this case is handled by
+      // advancing to the firecrawl engine — configured engines include it.)
+      if (cascade === undefined && attempt.cleaned !== true && looksBotGated(attempt.html) && config.backends.firecrawl.api_key) {
         let r: Awaited<ReturnType<Backends['firecrawl']['scrape']>>;
         try {
-          r = await backends.firecrawl.scrape(article.url, {});
+          r = await backends.firecrawl.scrape(attempt.url, {});
         } catch (e) {
           throw new Error(`readability could not extract article content (firecrawl fallback failed: ${String((e as Error)?.message ?? e)})`);
         }
         if (!r?.html) {
           throw new Error('readability could not extract article content (firecrawl fallback returned no html)');
         }
-        log.info({ url: article.url }, 'bot-gated page — firecrawl fallback used');
-        content = absolutizeBody(r.html, article.url);
+        log.info({ url: attempt.url }, 'bot-gated page — firecrawl fallback used');
+        content = absolutizeBody(r.html, attempt.url);
         if (adMarkers.length) {
           content = stripAdBlocks(content, adMarkers);
           text = textFromHtml(content);
@@ -634,15 +746,38 @@ export async function persistArticle(
           text = textFromHtml(r.html);
         }
         meta = firecrawlMetadata(r.metadata);
-      } else {
-        throw new Error('readability could not extract article content');
+        break;
       }
-    } else {
-      content = cleaned.content;
-      text = cleaned.text;
-      meta = extractMetadata(article.html, article.url);
+      throw extractionError ?? new Error('readability could not extract article content');
+    }
+
+    // Advance: re-fetch the page through the next configured engine.
+    engineIdx += 1;
+    const nextEngine = cascade!.engines[engineIdx];
+    log.info(
+      { url: attempt.url, engine: nextEngine, reason: ok ? 'near-empty extraction' : 'extraction failed' },
+      `fetch cascade: advancing to '${nextEngine}'`,
+    );
+    try {
+      const next = await cascade!.refetch(nextEngine);
+      if (!next || typeof next.html !== 'string' || !next.html) {
+        throw new Error('refetch returned empty article (no html)');
+      }
+      next.url = normalizeUrl(next.url || attempt.url);
+      next.title = next.title || attempt.title;
+      attempt = next;
+    } catch (e) {
+      log.warn(
+        { url: attempt.url, engine: nextEngine, err: String(e) },
+        `fetch cascade: '${nextEngine}' refetch failed — advancing`,
+      );
     }
   }
+
+  // The winning attempt is the content source: its title/date/metadata (and
+  // raw html for LLM extraction) must feed every downstream step, not the
+  // primary engine's discarded attempt.
+  article = attempt;
 
   // --- paywall filter (per-site opt-in) ---
   // Some sites (e.g. Electronic Payments International) gate a subset of

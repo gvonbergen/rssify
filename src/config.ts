@@ -43,6 +43,15 @@ export interface AppConfig {
   defaults: {
     schedule: string;
     engine: 'camofox' | 'firecrawl' | 'plain';
+    /** Ordered fetch-engine priority (the "fetch cascade"). Destination
+     * article pages are fetched through the first engine; on fetch failure,
+     * bot gate, or an empty/near-empty cleaned extraction the next engine in
+     * the list advances. Plain fetch is tried first by default; camofox and
+     * firecrawl are fallbacks (firecrawl is skipped entirely when no API key
+     * is configured). An empty list disables the cascade and restores exact
+     * single-engine behavior via `engine`. Per-site override: config_json
+     * `extract.enginePriority`. */
+    engine_priority: Array<'camofox' | 'firecrawl' | 'plain'>;
     /** Maximum articles shown per feed on the HTML index by default. */
     website_item_limit: number;
     feed_item_limit: number;
@@ -129,6 +138,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   defaults: {
     schedule: '0 */6 * * *',
     engine: 'firecrawl',
+    engine_priority: ['plain', 'camofox', 'firecrawl'],
     website_item_limit: 10,
     feed_item_limit: 10,
     scrape_concurrency: 2,

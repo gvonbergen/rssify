@@ -160,8 +160,10 @@ export function parseSiteConfig(row: { config_json: string }): Record<string, un
 
 // ---- sites ----
 /**
- * The scrape engine is global (settings.defaults.engine) — no per-site engine.
- * Strip a legacy `engine` key before persisting any site config_json.
+ * The scrape-engine priority is global (settings.defaults.engine_priority, or
+ * settings.defaults.engine when no priority list is configured) — no per-site
+ * engine, except the per-site `extract.enginePriority` override of the cascade
+ * order. Strip a legacy `engine` key before persisting any site config_json.
  */
 export function sanitizeSiteConfig(configJson: string): string {
   try {
