@@ -77,6 +77,43 @@ export function stripImages(html: string): string {
   return out;
 }
 
+/**
+ * Restore the source-declared hero image (og:image / JSON-LD image) when the
+ * cleaned article has no in-body image — the audits found ~49% of cleaned
+ * views render text-only while the source declares an og:image. The URL is
+ * absolutized against the article URL and restricted to http(s) (the same
+ * image-safety rule the sanitizer applies to stored images); anything else is
+ * ignored. Insertion is byte-exact string splicing — right after the
+ * `<body>` tag for full-document serializations (the stored clean pipeline's
+ * format), prepended for fragments — so the rest of the stored markup is
+ * untouched. Text-only feeds strip the figure again at serve time
+ * (stripImages).
+ */
+export function withHeroImage(
+  content: string,
+  imageUrl: string | undefined | null,
+  baseUrl: string,
+): string {
+  const src = (imageUrl ?? '').trim();
+  if (!src) return content;
+  if (/<img\b/i.test(content)) return content;
+  let abs: string;
+  try {
+    const u = new URL(src, baseUrl);
+    if (!/^https?:$/.test(u.protocol)) return content;
+    abs = u.href;
+  } catch {
+    return content;
+  }
+  const figure = `<figure><img src="${abs.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></figure>`;
+  const bodyOpen = /<body[^>]*>/i.exec(content);
+  if (bodyOpen) {
+    const idx = bodyOpen.index + bodyOpen[0].length;
+    return content.slice(0, idx) + figure + content.slice(idx);
+  }
+  return figure + content;
+}
+
 /** Escape text for safe inclusion as HTML body content. */
 function escHtml(s: string): string {
   return s
@@ -166,9 +203,69 @@ export function stripPrintBoilerplate(html: string): string {
   return $.html() ?? out;
 }
 
+/**
+ * Marker matcher shared by the block strippers: a marker containing spaces is
+ * a phrase (plain substring match); a single-token marker (e.g. the literal
+ * "Advt" ad label on ETBFSI pages) matches on word boundaries only, so a
+ * marker like "advt" can never bite into "adventure". Text is normalized
+ * (whitespace-collapsed, lowercased) before matching.
+ */
+export function blockMarkerHit(text: string, marker: string): boolean {
+  const norm = text.replace(/\s+/g, ' ').trim().toLowerCase();
+  const m = marker.trim().toLowerCase();
+  if (!m) return false;
+  if (/\s/.test(m)) return norm.includes(m);
+  return new RegExp(`(^|[^a-z0-9])${m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(norm);
+}
+
+/**
+ * Remove recurring consent / preferred-source / advertising / app-promotion /
+ * footer / related-content boilerplate blocks from cleaned article HTML.
+ * Driven by the `defaults.boilerplate_markers` list (per-site override:
+ * config_json `extract.boilerplate_markers`) — the audit-identified recurring
+ * artifacts (BigGo/PYMNTS "Preferred Sources" widget, Finextra cookie banner,
+ * ETBFSI "Advt" labels, app promos, © footer plates, "You may also like"
+ * tails) are shipped as the default marker list.
+ *
+ * Same guardrails as `stripAdBlocks`: only elements whose OWN contained text
+ * matches a marker AND is short (< 600 chars — a real article body runs into
+ * thousands) are removed, so an article legitimately quoting a marker phrase
+ * in a long paragraph is never nuked. Runs on readability output, so
+ * legitimate body text is never touched.
+ */
+export function stripBoilerplateBlocks(html: string, markers: string[]): string {
+  if (!markers.length) return html;
+  const $ = load(html);
+  const gone = new Set<unknown>();
+  // Container guard: a block that carries HALF or more of the whole document
+  // text is the article container (readability's wrapper div), not a
+  // boilerplate block — removing it would nuke the article (observed on
+  // short photo-card captions where the wrapper's text matched a footer
+  // marker).
+  const totalChars = $('body').text().replace(/\s+/g, ' ').trim().length;
+  $(
+    'div, section, article, aside, figure, blockquote, ul, ol, table, p, h1, h2, h3, h4, h5, h6, li, td, th, span, a, form, footer, nav, small',
+  ).each((_: number, el: any) => {
+    if ($(el).parents().toArray().some((p) => gone.has(p))) return;
+    const t = $(el).text().replace(/\s+/g, ' ').trim();
+    // Length guard: only strip short boilerplate-like blocks; a real article
+    // body runs into thousands of chars (see stripAdBlocks).
+    if (!t || t.length > 600) return;
+    if (totalChars > 0 && t.length * 2 > totalChars) return;
+    if (markers.some((k) => blockMarkerHit(t, k))) {
+      gone.add(el);
+      $(el).remove();
+    }
+  });
+  return $.html() ?? html;
+}
+
 export interface CleanOpts {
   /** Per-site opt-in: whole-block ad markers (see `stripAdBlocks`). */
   adMarkers?: string[];
+  /** Recurring boilerplate block markers (see `stripBoilerplateBlocks`);
+   *  callers default to `defaults.boilerplate_markers`. */
+  boilerplateMarkers?: string[];
   /** Warning sink for jsdom CSS parse warnings (defaults to the root logger). */
   log?: JsdomWarningSink;
 }
@@ -231,6 +328,9 @@ export function cleanHtml(
   let text: string;
   try {
     content = stripPrintBoilerplate(articleContent);
+    if (opts.boilerplateMarkers?.length) {
+      content = stripBoilerplateBlocks(content, opts.boilerplateMarkers);
+    }
     if (opts.adMarkers?.length) {
       content = stripAdBlocks(content, opts.adMarkers);
     }

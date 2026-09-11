@@ -5,7 +5,7 @@ import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
-import { ensureConfig, loadConfig, configSet } from './config.ts';
+import { ensureConfig, loadConfig, configSet, resolveBoilerplateMarkers } from './config.ts';
 import {
   countItems,
   deleteOrphanItems,
@@ -33,7 +33,7 @@ import { buildLlmExtractor } from './extract/llm.ts';
 import { createApp } from './server.ts';
 import { Scheduler } from './scheduler.ts';
 import { logger, siteLogger, type Logger, ROOT } from './logger.ts';
-import { extractMetadata } from './clean.ts';
+import { extractMetadata, withHeroImage } from './clean.ts';
 import { cleanHtmlAsync } from './cleanRunner.ts';
 import { sha1, slugify, isValidIdentifier, normalizeUrl, nowMs } from './util.ts';
 import { parseGoogleAlertsFeed } from '../sites/googlenews.ts';
@@ -669,19 +669,23 @@ program
           const adMarkers = Array.isArray(ext['ad_markers'])
             ? (ext['ad_markers'] as unknown[]).map(String)
             : [];
+          const boilerplateMarkers = resolveBoilerplateMarkers(config, siteCfg);
           // Worker-threaded cleaner: jsdom 29 retains one window per parse
           // (~35–40x doc size) even after close()+GC, which is what OOM-crashed
           // whole-backlog reprocess runs. cleanHtmlAsync recycles the worker on
           // a byte/item budget so the leak dies with the worker, not the process.
-          const cleaned = await cleanHtmlAsync(raw, row.url, { adMarkers, log });
+          const cleaned = await cleanHtmlAsync(raw, row.url, { adMarkers, boilerplateMarkers, log });
           const meta = extractMetadata(raw, row.url);
           const updates: Record<string, unknown> = {};
           if (cleaned) {
-            const newHash = sha1(cleaned.content);
+            // Mirror the scrape-time og:image hero recovery so reprocessed
+            // articles gain the same hero image the scrape path would store.
+            const newContent = withHeroImage(cleaned.content, meta.image, row.url);
+            const newHash = sha1(newContent);
             if (newHash !== row.content_hash) {
               const absContent = resolve(ROOT, row.content_path);
               mkdirSync(dirname(absContent), { recursive: true });
-              writeFileSync(absContent, cleaned.content, 'utf8');
+              writeFileSync(absContent, newContent, 'utf8');
               updates.content_hash = newHash;
             }
           }
