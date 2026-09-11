@@ -22,7 +22,7 @@ import type { AppConfig } from './config.ts';
 import { resolveBoilerplateMarkers } from './config.ts';
 import { buildBackends } from './backends/index.ts';
 export { buildBackends };
-import { absolutize, extractMetadata, stripAdBlocks, textFromHtml, withHeroImage } from './clean.ts';
+import { absolutize, extractMetadata, stripAdBlocks, stripBoilerplateBlocks, textFromHtml, withHeroImage } from './clean.ts';
 import { cleanHtmlAsync } from './cleanRunner.ts';
 import { load } from 'cheerio';
 import { normalizeUrl, sha1, nowMs } from './util.ts';
@@ -708,12 +708,13 @@ export async function persistArticle(
     if (attempt.cleaned === true) {
       // firecrawl path: html already cleaned; metadata comes via Article.metadata
       aContent = absolutizeBody(attempt.html, attempt.url);
+      if (boilerplateMarkers.length) {
+        aContent = stripBoilerplateBlocks(aContent, boilerplateMarkers);
+      }
       if (adMarkers.length) {
         aContent = stripAdBlocks(aContent, adMarkers);
-        aText = textFromHtml(aContent);
-      } else {
-        aText = textFromHtml(attempt.html);
       }
+      aText = textFromHtml(aContent);
       aMeta = firecrawlMetadata(attempt.metadata);
       ok = true;
     } else {
@@ -774,12 +775,13 @@ export async function persistArticle(
         }
         log.info({ url: attempt.url }, 'bot-gated page — firecrawl fallback used');
         content = absolutizeBody(r.html, attempt.url);
+        if (boilerplateMarkers.length) {
+          content = stripBoilerplateBlocks(content, boilerplateMarkers);
+        }
         if (adMarkers.length) {
           content = stripAdBlocks(content, adMarkers);
-          text = textFromHtml(content);
-        } else {
-          text = textFromHtml(r.html);
         }
+        text = textFromHtml(content);
         meta = firecrawlMetadata(r.metadata);
         break;
       }

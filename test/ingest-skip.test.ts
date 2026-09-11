@@ -192,6 +192,31 @@ test('persistArticle trims the recurring "Preferred Sources" boilerplate from th
   }
 });
 
+test('persistArticle trims the same recurring boilerplate on the firecrawl-cleaned path', async () => {
+  const dir = await makeTempDir();
+  const { db, config } = openTempDb(dir);
+  try {
+    seedSite(db);
+    const cand = { url: 'https://biggo.test/news/f130' };
+    // `cleaned: true` is the firecrawl path: html arrives already cleaned and
+    // must be held to the same boilerplate-trimming bar as readability output.
+    const res = await persistArticle(
+      db, config, 'example', 'news', cand,
+      { url: cand.url, title: '', html: preferredSourcesFixture(), cleaned: true, metadata: {} },
+      { plain: { fetch: async () => { throw new Error("unused"); } } } as unknown as Backends,
+      noopLogger,
+    );
+    assert.equal(res.inserted, 1);
+    assert.equal(res.bodyGood, true);
+    const stored = recentItems(db, 'example', null, 10);
+    const content = readFileSync(join(dir, 'data', 'example', `${stored[0].hash}.html`), 'utf8');
+    assert.doesNotMatch(content, /Preferred Sources/);
+    assert.match(content, /private token sale/);
+  } finally {
+    await removeTempDir(dir);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end: runSiteScrape skips blacklisted YouTube candidates BEFORE any
 // fetch, while non-blacklisted candidates still follow the plain-first cascade.
