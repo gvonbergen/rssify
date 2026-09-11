@@ -6,8 +6,11 @@ import { PlainBackend } from './plain.ts';
 
 /**
  * Build the `backends` object injected into scraper modules, wired from
- * config.yaml. All registered adapters are always available to modules;
- * `defaults.engine` just names the preferred one (passed to `pi` at `add` time).
+ * config.yaml. All registered adapters are always available to modules; the
+ * fetch-cascade order (`defaults.engine_priority`, per-site overridable via
+ * `extract.enginePriority`) decides which engine fetches first and which are
+ * fallbacks (`defaults.engine` remains the preferred engine when no priority
+ * list is configured).
  */
 export function buildBackends(config: AppConfig, logger?: FirecrawlLogger): Backends {
   const camofox = new CamofoxBackend(config.backends.camofox);

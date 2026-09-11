@@ -76,9 +76,21 @@ use `firecrawl` there unless a tunnel/VPN to the camofox host exists.
 
 ## Quick start (works offline against a local/simple site)
 
-Scraping backends are pluggable (see `config.yaml` → `backends`). The default
-`engine` is `firecrawl`; a plain-fetch `engine` (named `plain`) is also built in
-for static, fetch-friendly sites and needs no API key.
+Scraping backends are pluggable (see `config.yaml` → `backends`). The `engine`
+setting (`firecrawl` by default, plain-fetch `plain` also built in for static,
+fetch-friendly sites with no API key needed) drives feed discovery and is the
+single-engine fallback; article pages use the cascade below.
+
+Article pages are fetched through a **config-driven engine cascade**
+(`defaults.engine_priority`, default `[plain, camofox, firecrawl]`): plain HTTP
+first, then the next configured engine when the fetch fails (bot gate, timeout,
+network error) or the cleaned body comes back empty/near-empty. Firecrawl is
+skipped entirely while no API key is configured. Set `engine_priority: []` to
+restore exact single-engine behavior via `engine`, or override per site with
+`{"extract": {"enginePriority": ["plain", "camofox"]}}` in the site's
+config_json. Feed discovery (index/listing pages) is not part of the cascade —
+it always stays on the `engine` setting (Google News feed discovery is
+hardcoded plain HTTP).
 
 ```sh
 # Configure the AI endpoint used for LLM article extraction (optional — the
@@ -180,8 +192,7 @@ manually). The per-site profile lives in the DB `config_json`:
 ```jsonc
 {
   "template": "generic",
-  "engine": "plain",            // backend used to fetch this site
-  "extract": { "mode": "embedded-json", "max": 12 }
+  "extract": { "mode": "embedded-json", "max": 12, "enginePriority": ["plain", "camofox"] }
 }
 ```
 
@@ -256,6 +267,9 @@ src/                    # the app (config, db, backends, scraper, scheduler, ser
 - `camofox` — stealth Firefox REST API (raw page HTML; app cleans it).
 - `firecrawl` — cloud or self-hosted (returns already-cleaned HTML).
 - `plain` — plain `fetch` + Readability for simple/static pages.
+
+Engines are tried in priority order per article page (see the fetch cascade
+above); discovery stays on the primary engine.
 
 New engines are added by writing an adapter in `src/backends/` and exposing it
 via `buildBackends`; scheduler/modules/feeds stay untouched.

@@ -67,7 +67,10 @@ export interface ScraperContext {
   /** The per-site configurable inputs `pi` registered (opaque to the app). */
   config: Record<string, unknown>;
   kv: ScraperKV;
-  /** The single scrape engine configured in settings (`defaults.engine`). */
+  /** The primary scrape engine for this site (the head of the configured
+   * engine-priority cascade — `defaults.engine` when no priority list is
+   * configured). Fallbacks through the rest of the list are handled by the
+   * app's fetch cascade, not by modules. */
   engine: string;
   /** Global default discovery candidate cap (`defaults.discover_max`); a
    *  per-site config may override via `extract.max`. */
@@ -86,6 +89,21 @@ export interface ScraperContext {
    *  `extract.waitMs`. Passed to JS-capable engines when fetching article
    *  pages so lazy-loaded bodies are present before extraction. */
   waitMs: number;
+}
+
+/**
+ * The app-driven fetch cascade for one candidate article. When the primary
+ * fetch succeeds but cleaning yields an empty/near-empty body (or cleaning
+ * fails outright), persistArticle advances through the remaining configured
+ * engines in priority order and re-fetches the page through `refetch`.
+ */
+export interface FetchCascade {
+  /** Ordered, availability-filtered engine names (plain first by default). */
+  engines: string[];
+  /** Index into `engines` of the engine that produced the initial article. */
+  startIndex: number;
+  /** Fetch the article again through the named engine. */
+  refetch(engine: string): Promise<Article>;
 }
 
 /** firecrawl scrape result: cleaned HTML plus the scrape response metadata object. */

@@ -90,10 +90,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   classifier is the fix (a readable single-paragraph quicktake can measure
   barely above 200 chars).
 - `looksBotGated`/`BOT_GATE_MARKERS` only steer the Firecrawl fallback when
-  cleaning FAILED. Real pages of bot-protected sites legitimately embed marker
-  strings (Cloudflare `challenge-platform`, `js.datadome.co` scripts), so a
-  marker match on raw HTML is not itself a false-positive signal — the fixtures
-  in `test/fixtures/` pin this behavior.
+  cleaning FAILED on the legacy single-engine path (an active cascade advances
+  to the next configured engine instead). Real pages of bot-protected sites
+  legitimately embed marker strings (Cloudflare `challenge-platform`,
+  `js.datadome.co` scripts), so a marker match on raw HTML is not itself a
+  false-positive signal — the fixtures in `test/fixtures/` pin this behavior.
 
 ## Maintaining this file
 
@@ -101,3 +102,24 @@ Keep this file for knowledge useful to almost every future agent session in this
 Do not repeat what the codebase already shows; point to the authoritative file or command instead.
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
+
+## Fetch cascade (engine priority)
+
+- Destination-article fetching is a configuration-driven cascade
+  (`src/engines.ts`): per-site `extract.enginePriority` → global
+  `defaults.engine_priority` (default `['plain','camofox','firecrawl']`) →
+  legacy single `defaults.engine`. `filterConfiguredEngines` drops unconfigured
+  firecrawl but never returns an empty list.
+- Two halves: fetch errors advance in `runSiteScrape`'s parse loop; empty/
+  near-empty cleaned bodies advance inside `persistArticle` via the
+  `FetchCascade` seam (`{ engines, startIndex, refetch }` in src/contract.ts).
+  Picture items are exempt (a photo card never triggers fallback-engine spend).
+- Discovery is NOT cascaded and NOT priority-driven — index/listing pages stay
+  on the legacy single `defaults.engine` (the pre-cascade browser default), so
+  JS-rendered listing pages keep their existing engine on upgrade; Google News
+  feed discovery is hardcoded plain HTTP in `sites/googlenews.ts`. `persistArticle`
+  without a cascade is byte-for-byte legacy behavior; `engine_priority: []`
+  restores exact single-engine behavior.
+- Tests: test/fetch-cascade.test.ts (resolution rules, near-empty advance,
+  picture exemption, exhaustion, end-to-end runSiteScrape via a fake module
+  written into git-ignored sites/ at test time).
