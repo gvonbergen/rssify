@@ -90,10 +90,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   classifier is the fix (a readable single-paragraph quicktake can measure
   barely above 200 chars).
 - `looksBotGated`/`BOT_GATE_MARKERS` only steer the Firecrawl fallback when
-  cleaning FAILED. Real pages of bot-protected sites legitimately embed marker
-  strings (Cloudflare `challenge-platform`, `js.datadome.co` scripts), so a
-  marker match on raw HTML is not itself a false-positive signal — the fixtures
-  in `test/fixtures/` pin this behavior.
+  cleaning FAILED on the legacy single-engine path (an active cascade advances
+  to the next configured engine instead). Real pages of bot-protected sites
+  legitimately embed marker strings (Cloudflare `challenge-platform`,
+  `js.datadome.co` scripts), so a marker match on raw HTML is not itself a
+  false-positive signal — the fixtures in `test/fixtures/` pin this behavior.
 
 ## Maintaining this file
 

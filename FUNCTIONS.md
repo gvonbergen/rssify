@@ -373,7 +373,7 @@ side (`src/cleanWorker.ts`) runs `cleanHtml` and posts results/errors plus
 | `DelayBand` | interface | `{ lowerMs; upperMs }` |
 | `delayBandMs` | `(siteConfig, globalDefault) → DelayBand` | Per-site `scrape_delay` wins over `defaults.scrape_delay`; ms conversion |
 | `withRateLimit` | `(backends, band, site, log) → Backends` | Wraps every fetch with a random sleep + latency/status logging; warns on throttling (403/429/503/529, rate-limit text) |
-| `looksBotGated` | `(html) → boolean` | True when HTML carries a bot-protection marker (`BOT_GATE_MARKERS`: Cloudflare `cf-chl`/`challenge-platform`/etc., DataDome `captcha-delivery`/`datadome`). Only consulted when cleaning fails |
+| `looksBotGated` | `(html) → boolean` | True when HTML carries a bot-protection marker (`BOT_GATE_MARKERS`: Cloudflare `cf-chl`/`challenge-platform`/etc., DataDome `captcha-delivery`/`datadome`). Only consulted when cleaning fails on the legacy single-engine path — with a cascade the fetch advances to the next engine instead |
 | `looksLikePictureItem` | `(content, text) → boolean` | Picture-item gate: ≥1 `<img>` AND text < 500 chars AND paragraphs ≥80 chars / total < 0.7 |
 | `summarizeParseResults` | `(results, quality) → { newItems; paywalled; pictures }` | Aggregates per-candidate `ParseOutcome`s into the quality tallies; duplicates, paywalls and picture items never count |
 | `ParseOutcome` | interface | `{ ok; inserted; bodyGood; dateGood; paywalled; picture }` |
@@ -494,7 +494,8 @@ then `${VAR}` env expansion. Secrets (`*api_key*`) live in `.env`
 | Key | Default | Per-site override |
 |---|---|---|
 | `schedule` | `0 */6 * * *` | per-site `sites.schedule` |
-| `engine` | `firecrawl` (code default) | none (global) — **this instance overrides to `camofox`** in `config.yaml` |
+| `engine` | `firecrawl` (code default) | none (global) — **this instance overrides to `camofox`** in `config.yaml`; single-engine fallback when `engine_priority` is empty or invalid |
+| `engine_priority` | `['plain','camofox','firecrawl']` (code + `config.example.yaml`) | fetch-cascade order for article pages (`src/engines.ts`); per-site `config_json.extract.enginePriority` replaces the whole list. Empty list → exact legacy single-`engine` behavior |
 | `website_item_limit` | 10 | HTML index per-feed article count (the index is always a fixed overview); the dedicated `GET /feed/<site>/articles` page falls back to it when `limit` is missing/invalid (hard cap 1000) |
 | `feed_item_limit` | 10 | RSS output; `serve --limit` / `--all` |
 | `scrape_concurrency` | 2 | none |
@@ -722,8 +723,10 @@ config.yaml, .env                  # global config + secrets
   rules/ad markers so stored items pick up the fix without re-scraping. It does
   NOT apply the paywall filter and does not re-run LLM extraction for items that
   already have a sidecar.
-- **Engine is global** (`defaults.engine`); per-site engine keys are stripped by
-  `sanitizeSiteConfig`.
+- **Engine priority is global** (`defaults.engine_priority`, falling back to the
+  single `defaults.engine`) for article pages; per-site
+  `config_json.extract.enginePriority` replaces the whole cascade order. Legacy
+  per-site top-level `engine` keys are stripped by `sanitizeSiteConfig`.
 - **Quality self-correction**: generic sites whose body/date extraction rate
   drops below 60% are auto-reprofiled (6 h cooldown).
 - **Cleaning always runs through a worker thread** (`cleanHtmlAsync`, §10c) —
