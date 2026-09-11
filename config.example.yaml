@@ -22,12 +22,13 @@ defaults:
   schedule: 0 */6 * * *
   engine: camofox
   # Fetch-cascade engine priority for article pages: plain fetch is tried
-  # first; on fetch failure, a bot gate, or an empty/near-empty cleaned body
-  # the next engine in the list advances. Firecrawl is skipped entirely while
-  # no API key is configured. `engine` (above) still drives feed discovery and
-  # is the single-engine fallback when this list is empty or invalid. Set this to
-  # an empty list ([]) to restore exact single-engine behavior. Per-site
-  # override in the site's config_json:
+  # first; on fetch failure, a bot gate, or a junk/near-empty cleaned body
+  # (empty, too short, or gate/error/consent/offer/footer junk per
+  # src/quality.ts) the next engine in the list advances. Firecrawl is skipped
+  # entirely while no API key is configured. `engine` (above) still drives
+  # feed discovery and is the single-engine fallback when this list is empty
+  # or invalid. Set this to an empty list ([]) to restore exact single-engine
+  # behavior. Per-site override in the site's config_json:
   # {"extract": {"enginePriority": ["plain", "camofox"]}}.
   engine_priority: [plain, camofox, firecrawl]
   schedule_jitter_seconds: 1800
