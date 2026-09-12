@@ -3,6 +3,7 @@ import { load } from 'cheerio';
 import { Readability } from '@mozilla/readability';
 import { normalizeUrl } from './util.ts';
 import { logger } from './logger.ts';
+import { looksLikeJunkBody } from './quality.ts';
 
 /**
  * Minimal logger shape the jsdom warning router needs. pino loggers satisfy
@@ -204,6 +205,22 @@ export function stripBoilerplateBlocks(html: string, markers: string[]): string 
   return $.html() ?? html;
 }
 
+/**
+ * Below this cleaned-text length a body counts as near-empty for the
+ * second-chance recovery triggers (mirrors scraper.ts MIN_QUALITY_BODY —
+ * kept local to avoid a scraper→clean import cycle).
+ */
+const NEAR_EMPTY_BODY_CHARS = 200;
+/** A raw <article> element must hold at least this much text to seed a
+ *  second-chance Readability run (shorter elements are chrome fragments). */
+const MIN_ARTICLE_ELEMENT_CHARS = 200;
+/** A JSON-LD `articleBody` must hold at least this many characters to
+ *  qualify as a substantial body fallback. */
+const MIN_ARTICLE_BODY_CHARS = 200;
+/** Upper bound for the JSON-LD control-character repair pass (a pathological
+ *  multi-MB block is skipped rather than re-scanned). */
+const MAX_JSON_LD_REPAIR_CHARS = 2 * 1024 * 1024;
+
 export interface CleanOpts {
   /** Per-site opt-in: whole-block ad markers (see `stripAdBlocks`). */
   adMarkers?: string[];
@@ -249,25 +266,16 @@ export function stripAdBlocks(html: string, markers: string[]): string {
 }
 
 /**
- * Clean a raw page HTML with @mozilla/readability. Returns cleaned article HTML +
- * extracted plain text, or null if readability found no article content.
- * Relative src/href in the result are absolutized against `baseUrl`.
- *
- * Robustness: jsdom's CSS cascade parses every `<style>` block with css-tree and
- * can THROW on malformed CSS (observed: cryptonomist.ch article pages — the whole
- * article was lost). Readability 0.6 never reads computed styles, so on failure we
- * retry once with stylesheets stripped — safe, and rescues those pages.
+ * Shared tail of every extraction path: boilerplate strippers (print header,
+ * configured boilerplate/ad markers) + absolutization. Returns null when a
+ * stripper throws — the same failure contract the original cleanHtml had.
  */
-export function cleanHtml(
-  rawHtml: string,
+function finalizeClean(
+  articleContent: string,
+  textContent: string | null | undefined,
   baseUrl: string,
-  opts: CleanOpts = {},
+  opts: CleanOpts,
 ): CleanResult | null {
-  const html = revealInlineHiddenContent(rawHtml);
-  let parsed = extractArticle(html, baseUrl, opts.log);
-  if (!parsed) parsed = extractArticle(stripStylesheets(html), baseUrl, opts.log);
-  if (!parsed) return null;
-  const { content: articleContent, textContent } = parsed;
   let content: string;
   let text: string;
   try {
@@ -283,6 +291,271 @@ export function cleanHtml(
     return null;
   }
   return { content: absolutize(content, baseUrl), text };
+}
+
+/**
+ * Clean a raw page HTML with @mozilla/readability. Returns cleaned article HTML +
+ * extracted plain text, or null if readability found no article content.
+ * Relative src/href in the result are absolutized against `baseUrl`.
+ *
+ * Robustness: jsdom's CSS cascade parses every `<style>` block with css-tree and
+ * can THROW on malformed CSS (observed: cryptonomist.ch article pages — the whole
+ * article was lost). Readability 0.6 never reads computed styles, so on failure we
+ * retry once with stylesheets stripped — safe, and rescues those pages.
+ *
+ * Second-chance recovery (2026-09 audits): when the primary Readability result
+ * is junk (src/quality.ts), near-empty, or missing entirely, two GENERIC recovery
+ * passes run before giving up —
+ *  1. `<article>`-element retry: re-run Readability scoped to the raw page's
+ *     largest `<article>` element (e.g. PANews SSR pages, where the footer
+ *     disclaimer out-scores the short brief Readability should have picked).
+ *  2. JSON-LD `articleBody` fallback: when a parsed article-typed JSON-LD node
+ *     carries a substantial `articleBody` (e.g. Moneycontrol, whose article
+ *     region is a JS-injected stub and whose body text exists only in JSON-LD),
+ *     sanitize it into plain paragraphs and use it as the body.
+ * A recovered body is accepted only when it does NOT itself classify as junk,
+ * so boilerplate is never promoted into article content; picture-item-shaped
+ * primaries (near-empty body carrying images) are never replaced by either
+ * pass. Living inside cleanHtml keeps the scrape path, `rssify reprocess`, and
+ * `rssify add` snapshots in sync automatically.
+ */
+export function cleanHtml(
+  rawHtml: string,
+  baseUrl: string,
+  opts: CleanOpts = {},
+): CleanResult | null {
+  const html = revealInlineHiddenContent(rawHtml);
+  let parsed = extractArticle(html, baseUrl, opts.log);
+  if (!parsed) parsed = extractArticle(stripStylesheets(html), baseUrl, opts.log);
+  const primary = parsed ? finalizeClean(parsed.content, parsed.textContent, baseUrl, opts) : null;
+  const primaryText = primary?.text.trim() ?? '';
+  const primaryJunk = primary ? looksLikeJunkBody(primaryText, primary.content).junk : true;
+  const primaryNearEmpty = primaryText.length < NEAR_EMPTY_BODY_CHARS;
+  if (primary && !primaryJunk && !primaryNearEmpty) return primary;
+
+  const fromArticle = extractFromArticleElement(html, baseUrl, opts, primary, primaryJunk);
+  if (fromArticle) return fromArticle;
+  const fromJsonLd = extractFromJsonLdArticleBody(rawHtml, baseUrl, opts, primary, primaryJunk);
+  if (fromJsonLd) return fromJsonLd;
+  return primary;
+}
+
+/**
+ * Second chance 1: re-run Readability scoped to the raw page's largest
+ * `<article>` element. Accepted only when the recovered body classifies as
+ * real article text; when the primary was merely near-empty (not junk — e.g. a
+ * legitimate short flash brief), the recovery must also be meaningfully fuller
+ * than the primary so a good short extraction is never downgraded.
+ */
+function extractFromArticleElement(
+  html: string,
+  baseUrl: string,
+  opts: CleanOpts,
+  primary: CleanResult | null,
+  primaryJunk: boolean,
+): CleanResult | null {
+  let bestHtml: string | null = null;
+  let bestLen = 0;
+  try {
+    const $ = load(html);
+    $('article').each((_i, el) => {
+      const t = $(el).text().replace(/\s+/g, ' ').trim();
+      if (t.length > bestLen) {
+        bestLen = t.length;
+        bestHtml = $.html(el);
+      }
+    });
+  } catch {
+    return null;
+  }
+  if (!bestHtml || bestLen < MIN_ARTICLE_ELEMENT_CHARS) return null;
+  const scoped = `<!doctype html><html><head></head><body>${bestHtml}</body></html>`;
+  let parsed = extractArticle(scoped, baseUrl, opts.log);
+  let cand = parsed ? finalizeClean(parsed.content, parsed.textContent, baseUrl, opts) : null;
+  if (!cand) {
+    // Readability can refuse very short scoped documents; the element itself
+    // is already the article content, so clean it without re-scoring.
+    cand = finalizeClean(bestHtml, '', baseUrl, opts);
+    if (cand) cand = { ...cand, text: textFromHtml(cand.content).trim() };
+  }
+  if (!cand) return null;
+  if (looksLikeJunkBody(cand.text, cand.content).junk) return null;
+  if (primary && !primaryJunk && cand.text.trim().length <= primary.text.trim().length) return null;
+  return cand;
+}
+
+/**
+ * Second chance 2: a substantial `articleBody` on an article-typed JSON-LD
+ * node (Moneycontrol pattern: DOM article region is a JS-injected stub, the
+ * full body lives only in JSON-LD). The raw string is sanitized into plain
+ * paragraphs (see `articleBodyToHtml`); the result must not classify junk.
+ * Never fires when the primary is merely near-empty AND carries images — that
+ * shape is a legitimate picture item, and replacing it would drop the image.
+ */
+function extractFromJsonLdArticleBody(
+  rawHtml: string,
+  baseUrl: string,
+  opts: CleanOpts,
+  primary: CleanResult | null,
+  primaryJunk: boolean,
+): CleanResult | null {
+  if (primary && !primaryJunk && /<img\b/i.test(primary.content)) return null;
+  const body = articleBodyFromJsonLd(rawHtml);
+  if (!body) return null;
+  const built = articleBodyToHtml(body);
+  const staged = finalizeClean(built.content, '', baseUrl, opts);
+  if (!staged) return null;
+  // Text must be derived from the FINAL content (after the boilerplate/ad
+  // strippers may have removed blocks), so text and content never diverge.
+  const cand: CleanResult = { ...staged, text: textFromHtml(staged.content).trim() };
+  if (!cand) return null;
+  if (looksLikeJunkBody(cand.text, cand.content).junk) return null;
+  return cand;
+}
+
+/**
+ * Parse a JSON-LD block, tolerating RAW CONTROL CHARACTERS inside string
+ * literals (Moneycontrol embeds literal newlines inside `articleBody`, which
+ * makes strict JSON.parse throw "Bad control character … in a string"). On
+ * strict-parse failure, retry ONCE after escaping control characters inside
+ * string literals (string-boundary aware, single bounded pass). Any other
+ * malformation keeps the legacy outcome: the block is discarded.
+ */
+export function parseJsonLdLenient(txt: string): unknown | undefined {
+  try {
+    return JSON.parse(txt);
+  } catch {
+    /* fall through to the bounded repair pass */
+  }
+  if (!txt || txt.length > MAX_JSON_LD_REPAIR_CHARS) return undefined;
+  try {
+    return JSON.parse(repairJsonLdControlChars(txt));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Escape raw control characters inside JSON string literals (string-boundary
+ * aware: `"` / `\\` toggling and escapes are honored, so escaped quotes and
+ * already-escaped sequences are never corrupted). `\n`/`\r`/`\t`/`\b`/`\f`
+ * use their short escapes; other C0 controls get `\uXXXX`.
+ */
+function repairJsonLdControlChars(s: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) {
+        out += c;
+        escaped = false;
+        continue;
+      }
+      if (c === '\\') {
+        out += c;
+        escaped = true;
+        continue;
+      }
+      if (c === '"') {
+        inString = false;
+        out += c;
+        continue;
+      }
+      const code = c.charCodeAt(0);
+      if (code < 0x20) {
+        out += code === 0x0a ? '\\n' : code === 0x0d ? '\\r' : code === 0x09 ? '\\t' : code === 0x08 ? '\\b' : code === 0x0c ? '\\f' : `\\u${code.toString(16).padStart(4, '0')}`;
+        continue;
+      }
+      out += c;
+      continue;
+    }
+    if (c === '"') inString = true;
+    out += c;
+  }
+  return out;
+}
+
+const ARTICLE_TYPES = new Set(['NewsArticle', 'Article', 'BlogPosting']);
+
+function isArticleNode(n: Record<string, unknown>): boolean {
+  const t = n['@type'];
+  const types = Array.isArray(t) ? (t as unknown[]) : [t];
+  return types.some((x) => ARTICLE_TYPES.has(String(x)));
+}
+
+/**
+ * Parse every `<script type="application/ld+json">` block (leniently — see
+ * `parseJsonLdLenient`) and return the unwrapped typed nodes in document
+ * order. Shared by metadata extraction and the `articleBody` body fallback.
+ */
+function collectJsonLdNodes($: ReturnType<typeof load>): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  $('script[type="application/ld+json"]').each((_i, el) => {
+    const txt = $(el).text().trim();
+    if (!txt) return;
+    const parsed = parseJsonLdLenient(txt);
+    if (!parsed || typeof parsed !== 'object') return;
+    let node = unwrapJsonLd(parsed);
+    while (Array.isArray(node) && node.length) node = unwrapJsonLd(node);
+    if (node && typeof node === 'object') out.push(node as Record<string, unknown>);
+  });
+  return out;
+}
+
+/**
+ * First substantial `articleBody` on an article-typed JSON-LD node, or null.
+ * "Substantial" = at least MIN_ARTICLE_BODY_CHARS — a flash-brief-length stub
+ * never replaces a cleaned body.
+ */
+function articleBodyFromJsonLd(rawHtml: string): string | null {
+  let $: ReturnType<typeof load>;
+  try {
+    $ = load(rawHtml);
+  } catch {
+    return null;
+  }
+  const articleNode = collectJsonLdNodes($).find(isArticleNode);
+  const body = articleNode?.['articleBody'];
+  if (typeof body !== 'string') return null;
+  const trimmed = body.trim();
+  return trimmed.length >= MIN_ARTICLE_BODY_CHARS ? trimmed : null;
+}
+
+function escapeHtmlText(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Sanitize a JSON-LD `articleBody` string into plain paragraph HTML. The body
+ * is treated as UNTRUSTED text: script/style subtrees are dropped, remaining
+ * markup is stripped via text extraction, entities are decoded once, and the
+ * result is re-escaped into `<p>` elements — no tags, attributes, or URLs from
+ * the source survive, so nothing hostile can ride into the stored article.
+ * Paragraph breaks come from blank lines (single newlines only when the body
+ * has no blank-line structure at all).
+ */
+function articleBodyToHtml(body: string): CleanResult {
+  const $ = load(`<div id="__rssify_ab">${body}</div>`);
+  $('script,style').remove();
+  const text = $('#__rssify_ab').text() ?? '';
+  let paras = text
+    .split(/\n\s*\n/)
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (paras.length <= 1) {
+    paras = text
+      .split(/\n/)
+      .map((s) => s.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  }
+  const content = paras.map((p) => `<p>${escapeHtmlText(p)}</p>`).join('');
+  return { content, text: paras.join(' ') };
 }
 
 /**
@@ -441,30 +714,12 @@ export function extractMetadata(rawHtml: string, url: string): ParsedMetadata {
   // JSON-LD (Article / NewsArticle / BlogPosting). Collect every block, then
   // prefer an article-typed node over the first block: sites (e.g. The
   // Paypers) emit a BreadcrumbList block before the NewsArticle, and the
-  // breadcrumb's shape would otherwise shadow the real date.
-  const ARTICLE_TYPES = new Set(['NewsArticle', 'Article', 'BlogPosting']);
-  const candidates: Record<string, unknown>[] = [];
-  $('script[type="application/ld+json"]').each((_i, el) => {
-    const txt = $(el).text().trim();
-    if (!txt) return;
-    try {
-      const parsed = JSON.parse(txt);
-      // Some sites (e.g. CCN) wrap the article node in a @graph container
-      // instead of a top-level array; others use an array of graphs. Unwrap
-      // until we land on the actual typed node.
-      let node = unwrapJsonLd(parsed);
-      while (Array.isArray(node) && node.length) node = unwrapJsonLd(node);
-      if (node && typeof node === 'object') candidates.push(node as Record<string, unknown>);
-    } catch {
-      /* ignore malformed JSON-LD */
-    }
-  });
-  const isArticle = (n: Record<string, unknown>): boolean => {
-    const t = n['@type'];
-    const types = Array.isArray(t) ? (t as unknown[]) : [t];
-    return types.some((x) => ARTICLE_TYPES.has(String(x)));
-  };
-  const jsld = candidates.find(isArticle) ?? candidates[0] ?? null;
+  // breadcrumb's shape would otherwise shadow the real date. Parsing is
+  // lenient (see parseJsonLdLenient): raw control characters inside string
+  // literals — e.g. Moneycontrol's multi-line `articleBody` — no longer
+  // discard the whole block (which also cost the page its date and author).
+  const candidates = collectJsonLdNodes($);
+  const jsld = candidates.find(isArticleNode) ?? candidates[0] ?? null;
   if (jsld) {
     const title = first(jsld['headline'], jsld['name'], jsld['title']);
     if (title) out.title = String(title);
@@ -480,7 +735,13 @@ export function extractMetadata(rawHtml: string, url: string): ParsedMetadata {
   const twitter = (name: string) => $(`meta[name="${name}"]`).first().attr('content');
 
   if (!out.title) out.title = og('og:title') ?? twitter('twitter:title') ?? undefined;
-  if (!out.publishedAt) out.publishedAt = og('article:published_time') ?? undefined;
+  if (!out.publishedAt)
+    out.publishedAt =
+      og('article:published_time') ??
+      // Moneycontrol (and other sites) emit the OG article namespace WITH the
+      // `og:` prefix — `property="og:article:published_time"`.
+      og('og:article:published_time') ??
+      undefined;
   if (!out.author) out.author = og('article:author') ?? twitter('twitter:creator') ?? undefined;
   if (!out.image) {
     out.image =

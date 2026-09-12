@@ -78,9 +78,19 @@ const OFFER_MARKERS = [
  * Footer/copyright plate markers. Only trusted when the WHOLE body is short
  * and has no substantial paragraph (TradingView 52-word FactSet/ICE footer,
  * CoinDesk 92-word © + disclosure plate, MacroMicro 93-word chart
- * disclaimer).
+ * disclaimer). The disclaimer phrases are the PANews SSR footer plate
+ * ("Not financial or tax advice… Disclosure… This site is protected by
+ * reCAPTCHA.") that Readability can select INSTEAD of the real short brief —
+ * the plate leads the body, so the lead-window rule below catches it.
  */
-const FOOTER_MARKERS = ['©', 'all rights reserved', 'copyright', 'disclosure'];
+const FOOTER_MARKERS = [
+  '©',
+  'all rights reserved',
+  'copyright',
+  'disclosure',
+  'not financial or tax advice',
+  'protected by recaptcha',
+];
 
 /** A paragraph counts as substantial article text at this many chars. */
 const SUBSTANTIAL_PARAGRAPH_CHARS = 80;
