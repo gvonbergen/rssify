@@ -354,6 +354,7 @@ function extractFromArticleElement(
   primary: CleanResult | null,
   primaryJunk: boolean,
 ): CleanResult | null {
+  if (primary && !primaryJunk && /<img\b/i.test(primary.content)) return null;
   let bestHtml: string | null = null;
   let bestLen = 0;
   try {
@@ -375,10 +376,12 @@ function extractFromArticleElement(
   if (!cand) {
     // Readability can refuse very short scoped documents; the element itself
     // is already the article content, so clean it without re-scoring.
-    cand = finalizeClean(bestHtml, '', baseUrl, opts);
-    if (cand) cand = { ...cand, text: textFromHtml(cand.content).trim() };
+    const frag = load(bestHtml);
+    frag('script,style').remove();
+    cand = finalizeClean(frag.html() ?? bestHtml, '', baseUrl, opts);
   }
   if (!cand) return null;
+  cand = { ...cand, text: textFromHtml(cand.content).trim() };
   if (looksLikeJunkBody(cand.text, cand.content).junk) return null;
   if (primary && !primaryJunk && cand.text.trim().length <= primary.text.trim().length) return null;
   return cand;
