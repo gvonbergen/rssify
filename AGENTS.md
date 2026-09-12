@@ -76,6 +76,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   and are attributed with the page URL + css snippet via `openAttributedDom`
   (src/clean.ts) — they diagnose a broken site stylesheet, not a failed
   extraction.
+- Second-chance recovery lives INSIDE `cleanHtml` (src/clean.ts), not in the
+  callers: when the primary Readability result is missing, junk-classified,
+  or near-empty (< 200 chars), it retries Readability scoped to the raw
+  page's largest `<article>` element, then falls back to a sanitized JSON-LD
+  `articleBody` (Moneycontrol pattern). Recovered candidates are accepted
+  only when they themselves classify non-junk, and a picture-item-shaped
+  primary (near-empty + `<img>`) is never replaced by either recovery pass.
+  Because it is one function, the scrape path, `rssify reprocess`, and
+  `rssify add` snapshots stay in sync automatically — don't fork the logic
+  per call site. JSON-LD is parsed leniently (`parseJsonLdLenient`): raw
+  control characters inside string literals are repaired once, other
+  malformation is still discarded.
 
 ## Extraction quality
 

@@ -265,16 +265,17 @@ Internal helpers (not exported): `collectAnchors`, `collectJson`, `usable`,
 | `stripImages` | `(html) → string` | Text-only mode: removes `<picture>` wrappers, `<img>`, `<figcaption>` (caption without picture = noise) and now-empty `<figure>`/`<div>` wrappers (regex; used at serve time for `ignore_images`) |
 | `stripPrintBoilerplate` | `(html) → string` | Removes print-header/"An article from" paragraphs, breadcrumbs, footers, nav |
 | `stripAdBlocks` | `(html, markers: string[]) → string` | Removes whole blocks (any of div/section/article/…/p/span/a) whose own text (≤600 chars) contains a marker phrase; length guard protects real bodies |
-| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripBoilerplateBlocks` + optional `stripAdBlocks`; null when readability finds nothing. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
+| `cleanHtml` | `(rawHtml, baseUrl, opts?) → CleanResult \| null` | Runs `revealInlineHiddenContent` first (neutralizes inline `visibility:hidden` reveal-clamps that would make Readability drop the real body), then JSDOM + `@mozilla/readability` → content, then `stripPrintBoilerplate` + optional `stripBoilerplateBlocks` + optional `stripAdBlocks`; null when readability finds nothing. When the primary result is missing, junk-classified (§10b), or near-empty (< 200 chars), two GENERIC second-chance recoveries run before giving up: (1) re-run Readability scoped to the raw page's largest `<article>` element (accepted only if the recovered body is non-junk and fuller than a merely-near-empty primary), then (2) sanitize an article-typed JSON-LD `articleBody` (≥ 200 chars) into plain `<p>` paragraphs (never replaces a picture-item-shaped primary). Recovered content passes the same stripper chain. CSS errors are routed per-URL (non-fatal) and windows closed eagerly; long-lived loops use the worker front end `cleanHtmlAsync` (§10c) |
 | `revealInlineHiddenContent` | `(html) → string` | Parsed-DOM pre-pass: drops `visibility:hidden` (optional `!important`) declarations from element `style` attributes (declaration-boundary exact, so sibling `content-visibility`/`backface-visibility` are untouched). Neutralizes SSR "reveal clamp" containers (e.g. The Paypers Nuxt site) so Readability's `_isProbablyVisible` does not drop the real body before scoring; script bodies, comments, and onclick handlers (text nodes in the DOM) can never be corrupted |
 | `absolutize` | `(html, baseUrl) → string` | Resolves relative `src/href/srcset` to absolute |
 | `blockMarkerHit` | `(text, marker) → boolean` | Marker matcher for the block strippers: phrase markers substring-match, single-token markers match on word boundaries (so `advt` never bites into `adventure`) |
 | `stripBoilerplateBlocks` | `(html, markers) → string` | Removes short (< 600 chars, < half the document text) boilerplate blocks matching `defaults.boilerplate_markers` / `extract.boilerplateMarkers` — consent banners, "Preferred Sources" widgets, "Advt" labels, app promos, © footer plates, related-content tails; long article text is never touched |
 | `withHeroImage` | `(content, imageUrl, baseUrl) → string` | Restores the source-declared hero (og:image/JSON-LD) as a `<figure>` right after `<body>` when the cleaned article has no in-body image; http(s) URLs only, relative URLs absolutized; fragments get the figure prepended |
 | `textFromHtml` | `(html) → string` | Plain-text extraction (firecrawl-cleaned path) |
-| `extractMetadata` | `(rawHtml, url) → ParsedMetadata` | JSON-LD (prefers Article/NewsArticle/BlogPosting over BreadcrumbList) → OG/Twitter → `<time>` → visible-text date fallback; canonical + og:url |
+| `extractMetadata` | `(rawHtml, url) → ParsedMetadata` | JSON-LD (prefers Article/NewsArticle/BlogPosting over BreadcrumbList; parsed leniently — raw control characters inside string literals are repaired in one bounded pass instead of discarding the block) → OG/Twitter (incl. `og:article:published_time`) → `<time>` → visible-text date fallback; canonical + og:url |
+| `parseJsonLdLenient` | `(txt) → unknown \| undefined` | Strict `JSON.parse` first; on failure, ONE bounded repair pass escaping raw control characters inside JSON string literals (string-boundary aware; short escapes for `\n\r\t\b\f`, `\uXXXX` otherwise), then re-parse; any other malformation stays discarded (undefined) |
 
-Internal: `first`, `unwrapJsonLd`, `authorFromJsonLd`, `imageFromJsonLd`.
+Internal: `first`, `unwrapJsonLd`, `authorFromJsonLd`, `imageFromJsonLd`, plus the second-chance recovery helpers (`finalizeClean`, `extractFromArticleElement`, `extractFromJsonLdArticleBody`, `articleBodyFromJsonLd`, `articleBodyToHtml`, `collectJsonLdNodes`, `isArticleNode`, `repairJsonLdControlChars`).
 
 ---
 
@@ -294,7 +295,9 @@ the 2026-09 audit fixtures):
 - **Consent bodies**: a consent marker whose TAIL dominates (> 40% of a
   < 600-word body).
 - **Footer plates**: ©/rights/copyright/disclosure marker in the first 120
-  chars of a < 150-word body.
+  chars of a < 150-word body — plus the PANews SSR disclaimer-plate phrases
+  (`not financial or tax advice`, `protected by recaptcha`) that Readability
+  can select INSTEAD of a real short brief.
 
 Detection is marker/structure only — source-similarity is deliberately NOT a
 signal (aggregators rewrite/translate article text; faithful captures can
