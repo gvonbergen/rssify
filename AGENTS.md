@@ -82,7 +82,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   page's largest `<article>` element, then falls back to a sanitized JSON-LD
   `articleBody` (Moneycontrol pattern). Recovered candidates are accepted
   only when they themselves classify non-junk, and a picture-item-shaped
-  primary (near-empty + `<img>`) is never replaced by articleBody text.
+  primary (near-empty + `<img>`) is never replaced by either recovery pass.
   Because it is one function, the scrape path, `rssify reprocess`, and
   `rssify add` snapshots stay in sync automatically — don't fork the logic
   per call site. JSON-LD is parsed leniently (`parseJsonLdLenient`): raw
