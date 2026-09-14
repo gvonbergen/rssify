@@ -20,10 +20,7 @@ const TRACKING_PARAMS = new Set([
  *   new URL('www.example.com/a', 'https://www.example.com/section/') →
  *   https://www.example.com/section/www.example.com/a
  *
- * Detect only the narrow `www.<hostname>` shape (`www.` + a dotted host,
- * optionally a port, then /?# or end), prefix `https:` and let normal
- * resolution run. Absolute URLs, root/relative paths, protocol-relative
- * URLs and query/fragment links all pass through untouched.
+ * Keep detection narrow so ordinary relative paths retain their meaning.
  */
 const SCHEMELESS_WWW_LINK = /^www\.[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?::\d+)?(?:[/?#]|$)/;
 

@@ -145,7 +145,7 @@ When updating this file, preserve this bar for all agents and keep entries conci
 
 ## URL resolution
 
-- Scheme-less hostname hrefs ("`www.host.tld/path`", no scheme) are emitted by some publishers. EVER resolve a link through `resolveHref` (src/util.ts) — `new URL(href, base)` treats the bare hostname as a relative path and doubles the base path (`…/section/www.host.tld/…`) which then stores as the article's original URL. Used by the discovery anchor/JSON/follow sites (src/extract/discover.ts) and add.ts `buildLinkInventory`; all same-origin checks stay after it. `www.*`-only shape, `https:` prefix — absolute/root-relative/plain-relative/protocol-relative/query/fragment links pass through untouched.
+- Use the shared `resolveHref` for discovery, add snapshots, and canonical/og:url resolution; keep same-origin checks after resolution. See its contract in [FUNCTIONS.md](FUNCTIONS.md) and regressions in `test/util.test.ts` and `test/clean.test.ts`.
 
 ## Fetch cascade (engine priority)
 
