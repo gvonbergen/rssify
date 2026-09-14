@@ -1,7 +1,7 @@
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { load } from 'cheerio';
 import { Readability } from '@mozilla/readability';
-import { normalizeUrl } from './util.ts';
+import { normalizeUrl, resolveHref } from './util.ts';
 import { logger } from './logger.ts';
 import { looksLikeJunkBody } from './quality.ts';
 
@@ -701,7 +701,7 @@ export function extractMetadata(rawHtml: string, url: string): ParsedMetadata {
   // rest of the metadata extraction.
   const resolveMetaUrl = (value: string): string | undefined => {
     try {
-      return normalizeUrl(new URL(value, url).href);
+      return normalizeUrl(resolveHref(value, url));
     } catch {
       return undefined;
     }
