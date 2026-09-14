@@ -13,6 +13,25 @@ const TRACKING_PARAMS = new Set([
 ]);
 
 /**
+ * Scheme-less hostname links ("www.example.com/a", no scheme) are emitted by
+ * some publishers in place of absolute URLs. Resolving them with `new URL`
+ * treats the bare hostname as a RELATIVE path and doubles the base path:
+ *
+ *   new URL('www.example.com/a', 'https://www.example.com/section/') →
+ *   https://www.example.com/section/www.example.com/a
+ *
+ * Keep detection narrow so ordinary relative paths retain their meaning.
+ */
+const SCHEMELESS_WWW_LINK = /^www\.[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?::\d+)?(?:[/?#]|$)/;
+
+/** Resolve `href` against `baseUrl`, repairing scheme-less `www.` hostname links first. */
+export function resolveHref(href: string, baseUrl: string): string {
+  const trimmed = href.trim();
+  const raw = SCHEMELESS_WWW_LINK.test(trimmed) ? 'https://' + trimmed : trimmed;
+  return new URL(raw, baseUrl).href;
+}
+
+/**
  * Normalize a URL for dedup: lowercase scheme+host (via URL), drop fragments
  * and known tracking params, and collapse duplicate slashes in the path.
  * Collapsing `//` guards against scraper modules that naively punt

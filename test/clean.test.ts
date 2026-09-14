@@ -72,6 +72,20 @@ test('extractMetadata prefers typed JSON-LD and falls back to head/visible metad
   assert.equal(fallback.publishedAt, 'July 28, 2026');
 });
 
+test('extractMetadata repairs scheme-less canonical and og:url identities', () => {
+  const href = 'www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324';
+  const expected = `https://${href}`;
+  for (const tag of [
+    `<link rel="canonical" href="${href}&amp;utm_source=feed#top">`,
+    `<meta property="og:url" content="${href}&amp;utm_source=feed#top">`,
+    `<link rel="canonical" href=" \t${href}&amp;utm_source=feed#top\n ">`,
+    `<meta property="og:url" content=" \n${href}&amp;utm_source=feed#top\t ">`,
+  ]) {
+    const meta = extractMetadata(`<html><head>${tag}</head></html>`, expected);
+    assert.equal(meta.canonical ?? meta.ogUrl, expected);
+  }
+});
+
 test('cleanHtml extracts readable article content and absolutizes relative assets', () => {
   const paragraph = 'This is a sufficiently long article paragraph with useful details for a reader. '.repeat(8);
   const result = cleanHtml(`<!doctype html><html><head><title>Article</title></head><body><header>Chrome</header><main><article><h1>Headline</h1><p>${paragraph}</p><img src="/hero.jpg"></article></main><footer>Footer</footer></body></html>`, 'https://example.test/news/story');

@@ -143,6 +143,10 @@ Do not repeat what the codebase already shows; point to the authoritative file o
 Prefer rewriting or pruning existing entries over appending new ones.
 When updating this file, preserve this bar for all agents and keep entries concise.
 
+## URL resolution
+
+- Use the shared `resolveHref` for discovery, add snapshots, and canonical/og:url resolution; keep same-origin checks after resolution. See its contract in [FUNCTIONS.md](FUNCTIONS.md) and regressions in `test/util.test.ts` and `test/clean.test.ts`.
+
 ## Fetch cascade (engine priority)
 
 - Destination-article fetching is a configuration-driven cascade

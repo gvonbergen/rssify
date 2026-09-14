@@ -1,5 +1,5 @@
 import { openAttributedDom } from '../clean.ts';
-import { normalizeUrl } from '../util.ts';
+import { normalizeUrl, resolveHref } from '../util.ts';
 
 /**
  * Layout-agnostic article discovery.
@@ -86,7 +86,7 @@ function collectAnchors(html: string, baseUrl: string): Raw[] {
       const href = a.getAttribute('href') || '';
       let abs: URL;
       try {
-        abs = new URL(href, baseUrl);
+        abs = new URL(resolveHref(href, baseUrl));
       } catch {
         continue;
       }
@@ -118,7 +118,7 @@ function collectJson(html: string, baseUrl: string): Raw[] {
       const url = pick(o, URL_KEYS);
       let u: URL;
       try {
-        u = new URL(url as string, baseUrl);
+        u = new URL(resolveHref(url as string, baseUrl));
       } catch {
         return;
       }
@@ -232,7 +232,7 @@ export function findFollowLinks(html: string, sectionUrl: string, max = 6): Foll
       const href = a.getAttribute('href') || '';
       let u: URL;
       try {
-        u = new URL(href, sectionUrl);
+        u = new URL(resolveHref(href, sectionUrl));
       } catch {
         continue;
       }

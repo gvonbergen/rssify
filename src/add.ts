@@ -17,7 +17,7 @@ import { getSection, getSite, insertSection, insertSite, type Db } from './db.ts
 import { extractMetadata, openAttributedDom } from './clean.ts';
 import { cleanHtmlAsync } from './cleanRunner.ts';
 import { genericModuleSource, profileFromSnapshot } from './extract/profile.ts';
-import { isValidIdentifier, nowMs, slugify } from './util.ts';
+import { isValidIdentifier, nowMs, resolveHref, slugify } from './util.ts';
 import type {
   Article,
   Backends,
@@ -117,7 +117,7 @@ function buildLinkInventory(html: string, baseUrl: string): { href: string; text
   const out: { href: string; text: string }[] = [];
   const add = (href: string, text: string) => {
     try {
-      const abs = new URL(href, baseUrl).href;
+      const abs = resolveHref(href, baseUrl);
       if (!/^https?:/i.test(abs)) return;
       if (new URL(abs).origin !== baseOrigin) return;
       if (seen.has(abs)) return;
