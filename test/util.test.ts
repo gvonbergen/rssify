@@ -40,6 +40,15 @@ test('resolveHref repairs scheme-less www. hostname links before relative resolu
   assert.equal(resolveHref('www.foo', b), 'https://www.example.com/assets/news/www.foo');
 });
 
+test('resolveHref repairs whitespace-padded hostname links', () => {
+  const href = 'www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324';
+  const base = 'https://www.assetservicingtimes.com/assetservicesnews/';
+  for (const padding of [' ', '\t', '\r\n', ' \t\n']) {
+    assert.equal(resolveHref(`${padding}${href}${padding}`, base), `https://${href}`);
+  }
+  assert.equal(resolveHref(' /story?x=1 ', base), new URL('/story?x=1', base).href);
+});
+
 test('slugify and identifier validation handle punctuation and boundaries', () => {
   assert.equal(slugify('  Payments & Risk — News!  '), 'payments-risk-news');
   assert.equal(slugify('Already---Slug'), 'already-slug');

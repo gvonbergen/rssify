@@ -29,7 +29,8 @@ const SCHEMELESS_WWW_LINK = /^www\.[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?::\d+)?(?:
 
 /** Resolve `href` against `baseUrl`, repairing scheme-less `www.` hostname links first. */
 export function resolveHref(href: string, baseUrl: string): string {
-  const raw = SCHEMELESS_WWW_LINK.test(href) ? 'https://' + href : href;
+  const trimmed = href.trim();
+  const raw = SCHEMELESS_WWW_LINK.test(trimmed) ? 'https://' + trimmed : trimmed;
   return new URL(raw, baseUrl).href;
 }
 

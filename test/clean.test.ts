@@ -78,6 +78,8 @@ test('extractMetadata repairs scheme-less canonical and og:url identities', () =
   for (const tag of [
     `<link rel="canonical" href="${href}&amp;utm_source=feed#top">`,
     `<meta property="og:url" content="${href}&amp;utm_source=feed#top">`,
+    `<link rel="canonical" href=" \t${href}&amp;utm_source=feed#top\n ">`,
+    `<meta property="og:url" content=" \n${href}&amp;utm_source=feed#top\t ">`,
   ]) {
     const meta = extractMetadata(`<html><head>${tag}</head></html>`, expected);
     assert.equal(meta.canonical ?? meta.ogUrl, expected);
