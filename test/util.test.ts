@@ -40,12 +40,26 @@ test('resolveHref repairs scheme-less www. hostname links before relative resolu
   assert.equal(resolveHref('www.foo', b), 'https://www.example.com/assets/news/www.foo');
 });
 
-test('resolveHref repairs whitespace-padded hostname links', () => {
+test('resolveHref trims surrounding whitespace before scheme-less www. hostname detection', () => {
   const href = 'www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324';
+  const expected = `https://${href}`;
   const base = 'https://www.assetservicingtimes.com/assetservicesnews/';
+  // Leading whitespace only.
+  assert.equal(resolveHref(`  ${href}`, base), expected);
+  assert.equal(resolveHref(`\t${href}`, base), expected);
+  // Trailing whitespace only.
+  assert.equal(resolveHref(`${href}  `, base), expected);
+  assert.equal(resolveHref(`${href}\r\n`, base), expected);
+  // Both sides (mixed padding kinds).
   for (const padding of [' ', '\t', '\r\n', ' \t\n']) {
-    assert.equal(resolveHref(`${padding}${href}${padding}`, base), `https://${href}`);
+    assert.equal(resolveHref(`${padding}${href}${padding}`, base), expected);
   }
+  // Whitespace around an already-schemed URL must not change resolution.
+  const abs = 'https://www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324';
+  assert.equal(resolveHref(`  ${abs}`, base), abs);
+  assert.equal(resolveHref(`${abs}  `, base), abs);
+  assert.equal(resolveHref(`\t${abs}\n`, base), abs);
+  // A padded ordinary relative path still resolves relative.
   assert.equal(resolveHref(' /story?x=1 ', base), new URL('/story?x=1', base).href);
 });
 
