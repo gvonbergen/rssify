@@ -36,6 +36,20 @@ test('discoverCandidates extracts listing dates and respects explicit mode/max',
   assert.equal(candidates[0].title, 'Latest payments report');
 });
 
+test('discoverCandidates resolves scheme-less www. hostname anchors instead of doubling the base path', () => {
+  // Reported shape: the publisher emits an href without a scheme
+  // ("www.assetservicingtimes.com/..."), which used to resolve to
+  // https://www.assetservicingtimes.com/section/www.assetservicingtimes.com/section/…
+  const html = `<a href="www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324">
+    Nickel: Increased digital asset allocations hinge on improved security</a>`;
+  const candidates = discoverCandidates(html, 'https://www.assetservicingtimes.com/assetservicesnews/', { max: 10 });
+  assert.equal(candidates.length, 1);
+  assert.equal(
+    candidates[0].url,
+    'https://www.assetservicingtimes.com/assetservicesnews/digitalassetsarticle.php?article_id=18324',
+  );
+});
+
 test('findFollowLinks follows only the next category-scoped listing page', () => {
   const html = `<a href="?page=0">Previous</a><a href="?page=2">Next</a><a href="?page=3">Last</a>
     <a href="/digital-assets/2026/08/05/story">Next article</a>

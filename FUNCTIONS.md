@@ -632,6 +632,7 @@ Internal: `esc`, `cdata` (safe `]]>` splitting).
 |---|---|---|
 | `sha1` | `(s) → string` | Hex sha1 |
 | `normalizeUrl` | `(raw) → string` | Lowercases scheme+host, drops fragments + tracking params (utm_*, fbclid, gclid, ref…), collapses duplicate slashes |
+| `resolveHref` | `(href, baseUrl) → string` | Resolves a link against a base; scheme-less `www.<host>` hrefs are re-prefixed with `https:` so the hostname is never treated as a relative path |
 | `slugify` | `(s) → string` | URL-safe identifier |
 | `isValidIdentifier` | `(id, max=40) → boolean` | `[a-z0-9-]`, non-empty, ≤ max |
 | `nowMs` | `() → number` | `Date.now()` |
